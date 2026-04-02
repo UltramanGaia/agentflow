@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect } from 'react';
-import { ReactFlow, Background, Controls, MarkerType, ReactFlowProvider, useReactFlow } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MarkerType, ReactFlowProvider, useReactFlow, Position } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { Run } from './api';
@@ -35,15 +35,15 @@ const statusBorder = (status?: string) => {
 
 const GraphContent: React.FC<GraphViewProps> = ({ run, onSelectNode, sidebarWidth, rightPanelWidth }) => {
   const { fitView } = useReactFlow();
-  
+
   const nodes: Node[] = useMemo(() => {
     if (!run?.pipeline?.nodes) return [];
     // ... (rest of node logic)
-    
+
     // Very simple layout horizontally by levels
     const levels: Record<string, number> = {};
     const visiting = new Set<string>();
-    
+
     const visit = (nodeId: string): number => {
       if (levels[nodeId] !== undefined) return levels[nodeId];
       if (visiting.has(nodeId)) return 0;
@@ -59,12 +59,12 @@ const GraphContent: React.FC<GraphViewProps> = ({ run, onSelectNode, sidebarWidt
     run.pipeline.nodes.forEach(n => visit(n.id));
 
     const levelCounts: Record<number, number> = {};
-    
+
     return run.pipeline.nodes.map(n => {
       const level = levels[n.id] || 0;
       const count = levelCounts[level] || 0;
       levelCounts[level] = count + 1;
-      
+
       const nodeState = run.nodes?.[n.id];
       const status = nodeState?.status || 'waiting';
       const bgColor = statusBorder(status);
@@ -72,15 +72,17 @@ const GraphContent: React.FC<GraphViewProps> = ({ run, onSelectNode, sidebarWidt
 
       return {
         id: n.id,
-        position: { x: level * 250 + 50, y: count * 150 + 50 },
-        data: { 
+        position: { x: level * 280 + 50, y: count * 140 + 50 },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        data: {
           label: (
             <div className="flex flex-col gap-1 items-start text-left p-1 w-40 overflow-hidden text-sm">
               <strong className="truncate font-semibold text-slate-800">{n.id}</strong>
               <span style={{ color: textColor }} className="text-xs uppercase font-bold tracking-wider">{status}</span>
               <span className="text-[10px] text-slate-500">{n.agent || n.model || n.kind}</span>
             </div>
-          ) 
+          )
         },
         style: {
           background: bgColor,
@@ -95,26 +97,34 @@ const GraphContent: React.FC<GraphViewProps> = ({ run, onSelectNode, sidebarWidt
 
   const edges: Edge[] = useMemo(() => {
     if (!run?.pipeline?.nodes) return [];
-    const newEdges: Edge[] = [];
+
+    const edgeMap = new Map<string, Edge>();
+
     run.pipeline.nodes.forEach(n => {
       if (n.depends_on) {
         n.depends_on.forEach(depId => {
-          newEdges.push({
-            id: `e-${depId}-${n.id}`,
-            source: depId,
-            target: n.id,
-            markerEnd: { type: MarkerType.ArrowClosed },
-            style: { stroke: '#94a3b8', strokeWidth: 1.5 },
-          });
+          const edgeId = `e-${depId}-${n.id}`;
+          if (!edgeMap.has(edgeId)) {
+            edgeMap.set(edgeId, {
+              id: edgeId,
+              source: depId,
+              target: n.id,
+              type: 'smoothstep',
+              markerEnd: { type: MarkerType.ArrowClosed },
+              style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+            });
+          }
         });
       }
     });
-    return newEdges;
+
+    return Array.from(edgeMap.values());
   }, [run]);
+
 
   // Automatically fit view when container dimensions change or new nodes are added
   useEffect(() => {
-    // Only fit view when sidebars move or the number of nodes changes. 
+    // Only fit view when sidebars move or the number of nodes changes.
     // Do NOT fit view just because a node status (color) changed.
     fitView({ duration: 0 });
   }, [nodes.length, fitView, sidebarWidth, rightPanelWidth]);
@@ -124,9 +134,9 @@ const GraphContent: React.FC<GraphViewProps> = ({ run, onSelectNode, sidebarWidt
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
       <div className="h-full w-full bg-slate-50 relative">
-        <ReactFlow 
-          nodes={nodes} 
-          edges={edges} 
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
           onNodeClick={(_: React.MouseEvent, node: Node) => onSelectNode(node.id)}
           fitView
           minZoom={0.2}

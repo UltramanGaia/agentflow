@@ -39,15 +39,15 @@ class RunStore:
                         content = run_file.read_text(encoding="utf-8")
                         if not content.strip():
                             continue
-                        
+
                         run = RunRecord.model_validate_json(content)
                         # Only update if status changed or it's new
                         if run_id not in self._runs or self._runs[run_id].status != run.status:
                             sync_logger.debug(f"Syncing run {run_id}: status {run.status}")
-                            
+
                         self._runs[run_id] = run
                         self._mtimes[run_id] = mtime
-                        
+
                         # Sync events
                         events_path = run_file.parent / "events.jsonl"
                         if events_path.exists():
@@ -92,7 +92,7 @@ class RunStore:
     async def persist_run(self, run_id: str) -> None:
         record = self._runs[run_id]
         path = self.run_dir(run_id) / "run.json"
-        
+
         # Check if disk is newer before overwriting
         if path.exists():
             try:

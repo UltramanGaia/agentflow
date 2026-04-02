@@ -97,13 +97,13 @@ def create_app(*, store: RunStore | None = None, orchestrator: Orchestrator | No
 
     base_dir = os.path.join(os.path.dirname(__file__), "web")
     frontend_dist = os.path.join(base_dir, "frontend", "dist")
-    
+
     # Mount Vite static assets
     if os.path.isdir(frontend_dist):
         assets_dir = os.path.join(frontend_dist, "assets")
         if os.path.isdir(assets_dir):
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-        
+
         # Public folder/static files inside dist
         app.mount("/public", StaticFiles(directory=frontend_dist), name="public-dist")
 
@@ -117,7 +117,7 @@ def create_app(*, store: RunStore | None = None, orchestrator: Orchestrator | No
         if os.path.isfile(react_index):
             with open(react_index, "r") as f:
                 return HTMLResponse(content=f.read(), status_code=200)
-        
+
         return templates.TemplateResponse(
             name="index.html",
             request=request,

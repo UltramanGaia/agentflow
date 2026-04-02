@@ -4,8 +4,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { NodeState } from './api';
-import { Terminal, Brain, FileText, AlertCircle, ChevronDown, Copy, Zap, CheckCircle, PlayCircle, Hash, Clock, Search, RefreshCw, Database } from 'lucide-react';
+import { Terminal, Brain, FileText, AlertCircle, ChevronDown, Copy, Zap, CheckCircle, PlayCircle, Hash, Clock, RefreshCw, Database, Activity } from 'lucide-react';
 import { fetchArtifactContent } from './api';
+import { Scratchboard } from './Scratchboard';
 
 interface NodeDetailProps {
   runId: string | null;
@@ -14,8 +15,8 @@ interface NodeDetailProps {
   agentKind?: string;
 }
 
-export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agentKind }) => {
-  const [activeTab, setActiveTab ] = useState<'output' | 'thinking' | 'stdout' | 'stderr' | 'config'>('output');
+export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState }) => {
+  const [activeTab, setActiveTab ] = useState<'output' | 'thinking' | 'stdout' | 'stderr' | 'scratchboard' | 'config'>('output');
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [configContent, setConfigContent] = useState<string | null>(null);
   const [configLoading, setConfigLoading] = useState(false);
@@ -33,7 +34,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
 
     const isNodeChanged = lastNodeId.current !== nodeId;
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(nodeState?.status || '');
-    
+
     // Initial selection ONLY when clicking a NEW node
     if (isNodeChanged) {
       if (nodeState?.output) {
@@ -45,8 +46,8 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
     }
 
     // Auto-switch from stdout/stderr to output when node FINISHES
-    const transitionedToFinished = 
-      !['completed', 'failed', 'cancelled'].includes(lastStatus.current || '') && 
+    const transitionedToFinished =
+      !['completed', 'failed', 'cancelled'].includes(lastStatus.current || '') &&
       isTerminal;
 
     if (transitionedToFinished && (activeTab === 'stdout' || activeTab === 'stderr') && nodeState?.output) {
@@ -68,7 +69,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
     if (!runId || !nodeId) return;
 
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(nodeState?.status || '');
-    
+
     const fetchLogs = async () => {
       if (activeTab === 'stdout' || activeTab === 'stderr') {
         if (!logs) setLogsLoading(true);
@@ -97,7 +98,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
     };
 
     fetchLogs();
-    
+
     if (!isTerminal && (activeTab === 'stdout' || activeTab === 'stderr')) {
       const timer = setInterval(fetchLogs, 1000);
       return () => clearInterval(timer);
@@ -124,14 +125,14 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
        'error': { icon: <AlertCircle size={14} />, color: 'text-red-600', bg: 'bg-red-50' },
        'default': { icon: <Hash size={14} />, color: 'text-slate-400', bg: 'bg-slate-50' }
      };
-     
+
      // Match by kind or raw type
      if (type.includes('thought')) return types['thought'];
      if (type.includes('action.call')) return types['action.call'];
      if (type.includes('action.response')) return types['action.response'];
      if (type.includes('stdout')) return types['stdout'];
      if (type.includes('stderr')) return types['stderr'];
-     
+
      return types[type] || types['default'];
   }
 
@@ -141,7 +142,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
     const style = getEventStyle(rawType);
     let content = typeof trace?.content === 'object' ? JSON.stringify(trace.content, null, 2) : String(trace?.content || '');
     const timestamp = trace?.timestamp ? new Date(trace.timestamp).toLocaleTimeString() : '';
-    
+
     // Check if content is empty but there's raw data
     const rawData = trace?.raw || {};
     const hasInterestingData = Object.keys(rawData).some(k => !['type', 'timestamp', 'node_id', 'agent', 'attempt'].includes(k));
@@ -155,7 +156,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
       <div key={index} className="relative pl-6 pb-6 last:pb-2 group">
         {/* Timeline connector */}
         <div className="absolute left-[11px] top-4 bottom-0 w-px bg-slate-200 group-last:bg-transparent" />
-        
+
         {/* Event Icon/Marker */}
         <div className={`absolute left-0 top-1 w-6 h-6 rounded-full ${style.bg} ${style.color} flex items-center justify-center ring-4 ring-white z-10 shadow-sm border border-slate-100`}>
           {style.icon}
@@ -183,7 +184,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
                       <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/60" />
                     </div>
                     {timestamp && <span className="text-[9px] text-slate-500 font-mono">{timestamp}</span>}
-                    <button 
+                    <button
                       onClick={() => navigator.clipboard.writeText(commandText)}
                       className="text-slate-500 hover:text-white transition-colors p-1"
                     >
@@ -203,7 +204,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
                 </ReactMarkdown>
               </div>
             )}
-            
+
             {(hasInterestingData && !isCommand && (!content.trim() || !isStartEvent)) && (
               <pre className="text-[10px] bg-slate-900/95 text-slate-300 p-3 rounded-xl border border-slate-800 overflow-x-auto font-mono shadow-inner max-h-80 custom-scrollbar whitespace-pre-wrap">
                 {JSON.stringify(rawData, null, 2)}
@@ -217,7 +218,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
 
   const renderLogContent = (content: string) => {
     if (!content) return null;
-    
+
     const lines = content.split('\n').filter(l => l.trim());
     return (
       <div className="space-y-3 font-mono text-[11px]">
@@ -235,7 +236,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
              const type = (parsed.type || parsed.kind || 'LOG').toUpperCase();
              const isError = type.includes('ERROR') || type.includes('STDERR');
              const timestamp = parsed.timestamp ? new Date(parsed.timestamp).toLocaleTimeString() : '';
-             
+
              return (
                <div key={i} className={`p-0 rounded-xl border shadow-sm overflow-hidden ${isError ? 'bg-red-50/30 border-red-100' : 'bg-slate-50/50 border-slate-200/60'}`}>
                  <div className={`px-3 py-1.5 flex items-center justify-between border-b ${isError ? 'bg-red-50 border-red-100' : 'bg-slate-100 border-slate-200/60'}`}>
@@ -271,31 +272,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
     }
   };
 
-  // Find the session ID from trace events
-  // We scan all events for "session_id" (Claude/Kimi) or "thread_id" (Codex)
-  // We are looking for any string that looks like a UUID (long-enough string)
-  let foundSessionId = null;
-  if (nodeState?.trace_events) {
-    for (const e of nodeState.trace_events) {
-      const sid = e.raw?.session_id || e.raw?.thread_id || e.raw?.id;
-      if (sid && typeof sid === 'string' && sid.length > 20) {
-        foundSessionId = sid;
-        break;
-      }
-    }
-  }
-  
-  const isAgent = ['codex', 'claude', 'kimi'].includes(agentKind || '');
-  const showResume = isAgent && !!foundSessionId;
-  const sessionIdDisplay = foundSessionId || nodeState?.node_id || nodeId || 'n/a';
-  
-  const resumeCommand = agentKind === 'codex' 
-    ? `codex -- --resume ${foundSessionId}` 
-    : `${agentKind || 'claude'} --resume ${foundSessionId}`;
 
-  const copyToClipboard = () => {
-    if (foundSessionId) navigator.clipboard.writeText(resumeCommand);
-  };
 
   return (
     <div className="w-full bg-white border-l border-slate-200 h-full flex flex-col shrink-0 overflow-hidden relative shadow-2xl z-20">
@@ -319,23 +296,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
             <span className="flex items-center gap-1"><Clock size={10} /> Attempt {nodeState?.current_attempt || 0}</span>
-            {showResume && <span className="font-mono text-slate-300 flex items-center gap-1"><Search size={10} /> {sessionIdDisplay.slice(0, 8)}...</span>}
           </div>
-          
-          {showResume && (
-            <div className="flex items-center bg-slate-950 rounded-lg border border-slate-800 pl-3 pr-1 py-1 group transition-all hover:border-slate-700 shadow-xl overflow-hidden">
-              <code className="text-[10px] font-mono text-emerald-400 truncate flex-1 pr-2 tracking-tight">
-                {resumeCommand}
-              </code>
-              <button 
-                onClick={copyToClipboard}
-                title="Copy Command"
-                className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition-all active:scale-95"
-              >
-                <Copy size={12} />
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -345,14 +306,15 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
           { id: 'thinking', icon: <Brain size={13} />, label: 'Thinking' },
           { id: 'stdout', icon: <Terminal size={13} />, label: 'Stdout' },
           { id: 'stderr', icon: <AlertCircle size={13} />, label: 'Stderr' },
+          { id: 'scratchboard', icon: <Activity size={13} />, label: 'Scratchboard' },
           { id: 'config', icon: <Hash size={13} />, label: 'Config' },
         ].map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id as any)}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-md transition-all whitespace-nowrap ${
-              activeTab === tab.id 
-                ? 'bg-white text-blue-600 shadow-sm border border-slate-200 ring-1 ring-black/5' 
+              activeTab === tab.id
+                ? 'bg-white text-blue-600 shadow-sm border border-slate-200 ring-1 ring-black/5'
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
             }`}
           >
@@ -362,7 +324,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
         ))}
       </div>
 
-      <div 
+      <div
         ref={scrollRef}
         onScroll={['output', 'thinking', 'stdout', 'stderr'].includes(activeTab) ? handleScroll : undefined}
         className="flex-1 overflow-y-auto custom-scrollbar bg-white/40 relative"
@@ -371,8 +333,8 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
           {activeTab === 'output' && (
             <div className="prose prose-sm prose-slate max-w-none relative">
               {nodeState?.output ? (
-                 <ReactMarkdown 
-                   remarkPlugins={[remarkGfm]} 
+                 <ReactMarkdown
+                   remarkPlugins={[remarkGfm]}
                    rehypePlugins={[rehypeHighlight]}
                  >
                    {typeof nodeState.output === 'string' ? nodeState.output : JSON.stringify(nodeState.output, null, 2)}
@@ -392,7 +354,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
             <div className="space-y-0">
               <div className="flex justify-between items-center mb-4 px-1">
                  <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Timeline</h3>
-                 <button 
+                 <button
                    onClick={() => setShowRawTrace(!showRawTrace)}
                    className={`text-[9px] font-black px-2 py-1 rounded transition-all flex items-center gap-1.5 ${
                       showRawTrace ? 'bg-slate-900 text-white shadow-lg' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
@@ -417,6 +379,12 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
                 )
               )}
             </div>
+          )}
+
+          {activeTab === 'scratchboard' && (
+             <div className="py-2">
+                <Scratchboard runId={runId} />
+             </div>
           )}
 
           {activeTab === 'config' && (
@@ -452,7 +420,7 @@ export const NodeDetail: FC<NodeDetailProps> = ({ runId, nodeId, nodeState, agen
       </div>
 
       {['output', 'thinking', 'stdout', 'stderr'].includes(activeTab) && !autoScroll && (
-        <button 
+        <button
           onClick={() => {
             setAutoScroll(true);
             if (scrollRef.current) {
