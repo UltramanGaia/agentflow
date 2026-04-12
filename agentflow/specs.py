@@ -84,6 +84,9 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+_INTERACTIVE_AGENT_KINDS = {AgentKind.CODEX, AgentKind.CLAUDE, AgentKind.KIMI}
+
+
 def normalize_agent_name(value: str | AgentKind) -> str:
     if isinstance(value, AgentKind):
         return value.value
@@ -1429,6 +1432,8 @@ class PipelineSpec(BaseModel):
     name: str
     description: str | None = None
     working_dir: str = "."
+    optimizer: str | None = None
+    n_run: int = Field(default=1, ge=1)
     concurrency: int = Field(default=4, ge=1)
     fail_fast: bool = False
     max_iterations: int = Field(default=10, ge=1)
@@ -1453,6 +1458,21 @@ class PipelineSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_nodes(self) -> "PipelineSpec":
+        if self.optimizer is not None:
+            normalized_optimizer = self.optimizer.strip()
+            if not normalized_optimizer:
+                raise ValueError("`optimizer` must not be empty")
+            optimizer_kind = builtin_agent_kind(normalized_optimizer)
+            if optimizer_kind is None or optimizer_kind not in _INTERACTIVE_AGENT_KINDS:
+                supported = ", ".join(f"`{agent.value}`" for agent in sorted(_INTERACTIVE_AGENT_KINDS, key=lambda agent: agent.value))
+                raise ValueError(f"`optimizer` must be one of {supported}")
+            self.optimizer = normalized_optimizer
+        elif self.n_run > 1:
+            raise ValueError("`optimizer` is required when `n_run` is greater than 1")
+
+        if not self.nodes:
+            raise ValueError("pipeline must contain at least one node")
+
         ids = [node.id for node in self.nodes]
         duplicates = {node_id for node_id in ids if ids.count(node_id) > 1}
         if duplicates:
@@ -1501,6 +1521,10 @@ class PipelineSpec(BaseModel):
     @property
     def working_path(self) -> Path:
         return Path(self.working_dir).expanduser().resolve()
+
+    @property
+    def uses_graph_optimizer(self) -> bool:
+        return self.optimizer is not None and self.n_run > 1
 
 
 class NormalizedTraceEvent(BaseModel):
@@ -1560,6 +1584,9 @@ class RunRecord(BaseModel):
     id: str
     status: RunStatus = RunStatus.QUEUED
     pipeline: PipelineSpec
+    optimization_parent_run_id: str | None = None
+    optimization_round: int | None = Field(default=None, ge=1)
+    optimization_session: dict[str, Any] | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     started_at: str | None = None
     finished_at: str | None = None

@@ -154,6 +154,19 @@ def test_dag_and_node_repr_and_payload_isolation():
     assert plan.depends_on == []
 
 
+def test_graph_supports_optimizer_and_n_run():
+    with Graph("opt-demo", optimizer="codex", n_run=3) as dag:
+        codex(task_id="plan", prompt="plan")
+
+    payload = dag.to_payload()
+    spec = dag.to_spec()
+
+    assert payload["optimizer"] == "codex"
+    assert payload["n_run"] == 3
+    assert spec.optimizer == "codex"
+    assert spec.n_run == 3
+
+
 def test_airflow_like_dag_applies_local_target_defaults():
     with Graph(
         "local-defaults",

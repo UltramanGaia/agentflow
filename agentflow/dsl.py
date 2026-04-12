@@ -85,6 +85,8 @@ class Graph:
         *,
         description: str | None = None,
         working_dir: str = ".",
+        optimizer: str | None = None,
+        n_run: int = 1,
         concurrency: int = 4,
         fail_fast: bool = False,
         max_iterations: int = 10,
@@ -97,6 +99,8 @@ class Graph:
         self.name = name
         self.description = description
         self.working_dir = working_dir
+        self.optimizer = optimizer
+        self.n_run = n_run
         self.concurrency = concurrency
         self.fail_fast = fail_fast
         self.max_iterations = max_iterations
@@ -136,6 +140,9 @@ class Graph:
         if self.description is not None:
             payload["description"] = self.description
         payload["working_dir"] = self.working_dir
+        if self.optimizer is not None:
+            payload["optimizer"] = self.optimizer
+        payload["n_run"] = self.n_run
         payload["concurrency"] = self.concurrency
         payload["fail_fast"] = self.fail_fast
         payload["max_iterations"] = self.max_iterations
