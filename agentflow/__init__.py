@@ -3,8 +3,10 @@
 from agentflow.dsl import (
     DAG,
     Graph,
+    agent,
     claude,
     codex,
+    evolve,
     fanout,
     kimi,
     merge,
@@ -23,8 +25,10 @@ def create_app(*args, **kwargs):
 __all__ = [
     "DAG",
     "Graph",
+    "agent",
     "claude",
     "codex",
+    "evolve",
     "fanout",
     "kimi",
     "merge",

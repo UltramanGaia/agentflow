@@ -18,7 +18,7 @@ from agentflow.runners.base import (
     StreamCallback,
 )
 from agentflow.runners.ssh import SSHRunner
-from agentflow.specs import NodeSpec
+from agentflow.specs import NodeSpec, normalize_agent_name
 
 
 class EC2Runner(Runner):
@@ -142,7 +142,7 @@ class EC2Runner(Runner):
 
     async def _prepare_env(self, node, prepared):
         """Forward local credentials and build auth setup."""
-        local_creds = collect_local_credentials(node.agent.value)
+        local_creds = collect_local_credentials(normalize_agent_name(node.agent))
         merged_env = {**local_creds, **prepared.env}
         return PreparedExecution(
             command=prepared.command, env=merged_env, cwd=prepared.cwd,
@@ -179,7 +179,7 @@ class EC2Runner(Runner):
                 await on_output("stderr", "cloud-init may have failed, proceeding anyway...")
 
         # Inject agent auth setup
-        auth_setup = agent_auth_setup(node.agent.value, prepared.env)
+        auth_setup = agent_auth_setup(normalize_agent_name(node.agent), prepared.env)
         if auth_setup:
             original_cmd = " ".join(shlex.quote(p) for p in prepared.command)
             auth_prepared = PreparedExecution(

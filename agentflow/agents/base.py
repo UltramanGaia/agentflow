@@ -13,7 +13,7 @@ class AgentAdapter(ABC):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         raise NotImplementedError
 
-    def provider_config(self, value: str | ProviderConfig | None, agent: AgentKind) -> ProviderConfig | None:
+    def provider_config(self, value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
         return resolve_execution_provider(value, agent)
 
     def merge_env(self, *parts: dict[str, str]) -> dict[str, str]:

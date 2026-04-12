@@ -7,7 +7,13 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        pass
 from pathlib import Path
 
 import typer
@@ -54,7 +60,8 @@ from agentflow.local_shell import (
     target_uses_login_bash,
 )
 from agentflow.prepared import resolve_local_workdir
-from agentflow.specs import AgentKind, LocalTarget, PipelineSpec, provider_uses_kimi_anthropic_auth, resolve_provider
+from agentflow.specs import AgentKind, LocalTarget, PipelineSpec, normalize_agent_name, provider_uses_kimi_anthropic_auth, resolve_provider
+from agentflow.tuned_agents import list_tuned_agent_records, resolve_tuned_agent_version, run_evolution_from_payload
 
 app = typer.Typer(add_completion=False)
 
@@ -109,6 +116,50 @@ def _build_store(runs_dir: str) -> object:
     from agentflow.store import RunStore
 
     return RunStore(runs_dir)
+
+
+def _render_tuned_agents_summary(records: list[object]) -> str:
+    if not records:
+        return "No tuned agents found."
+    lines: list[str] = []
+    for record in records:
+        lines.append(
+            f"{getattr(record, 'name', '-')}"
+            f" [{_status_value(getattr(record, 'base_agent', '-'))}] "
+            f"latest={getattr(record, 'latest_version', '-') or '-'} "
+            f"versions={len(getattr(record, 'versions', []) or [])}"
+        )
+    return "\n".join(lines)
+
+
+def _render_tuned_agent_detail(record: object | None) -> str:
+    if record is None:
+        return "Tuned agent not found."
+    lines = [
+        f"Name: {getattr(record, 'name', '-')}",
+        f"Base agent: {_status_value(getattr(record, 'base_agent', '-'))}",
+        f"Latest version: {getattr(record, 'latest_version', '-') or '-'}",
+        f"Versions: {len(getattr(record, 'versions', []) or [])}",
+    ]
+    versions = getattr(record, "versions", []) or []
+    for version in versions:
+        lines.append(
+            f" - {getattr(version, 'id', '-')} status={getattr(version, 'status', '-')} "
+            f"repo={getattr(version, 'repo_path', '-')}"
+        )
+    return "\n".join(lines)
+
+
+def _render_evolution_summary(result: dict[str, object]) -> str:
+    return "\n".join(
+        [
+            f"Agent: {result.get('agent_name', '-')}",
+            f"Version: {result.get('version', '-')}",
+            f"Base agent: {result.get('base_agent', '-')}",
+            f"Executable: {result.get('executable', '-')}",
+            f"Repo path: {result.get('repo_path', '-')}",
+        ]
+    )
 
 
 def _create_web_app(store: object, orchestrator: object) -> object:
@@ -1987,8 +2038,8 @@ def templates() -> None:
 
 @app.command()
 def init(
-    path: str | None = typer.Argument(
-        None,
+    path: str = typer.Argument(
+        "",
         help="Optional destination path. When omitted or `-`, print the selected template to stdout.",
     ),
     template: str = typer.Option(
@@ -2020,7 +2071,7 @@ def init(
         raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
     support_files = rendered_template.support_files
 
-    if path is None or path == "-":
+    if not path or path == "-":
         if support_files:
             typer.echo(
                 f"Template `{template}` includes support files and requires a destination path.",
@@ -2136,6 +2187,111 @@ def rerun(
 
 
 @app.command()
+def evolve(
+    run_id: str,
+    node: list[str] = typer.Option(..., "--node", "-n", help="Source node ids to harvest traces from."),
+    target: str = typer.Option("codex", help="Base agent kind to evolve."),
+    optimizer: str = typer.Option("codex", help="Optimizer agent kind to patch the cloned repo."),
+    profile: str = typer.Option("", "--profile", help="Tuner profile name under `agent_tuner/`. Defaults to `target`."),
+    runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
+    output: StructuredOutputFormat = typer.Option(
+        StructuredOutputFormat.SUMMARY,
+        "--output",
+        help="Structured output format for evolution results.",
+    ),
+) -> None:
+    store = _build_store(runs_dir)
+    record = _get_run_or_exit(store, run_id, runs_dir=runs_dir)
+    pipeline_nodes = record.pipeline.node_map
+    missing_nodes = [node_id for node_id in node if node_id not in pipeline_nodes]
+    if missing_nodes:
+        typer.echo(f"Unknown node ids for run `{run_id}`: {missing_nodes}", err=True)
+        raise typer.Exit(code=1)
+
+    normalized_target = target.strip()
+    selected_nodes = [
+        node_id
+        for node_id in node
+        if normalize_agent_name(pipeline_nodes[node_id].agent) == normalized_target
+    ]
+    if not selected_nodes:
+        typer.echo(
+            f"No selected nodes in run `{run_id}` use target agent `{normalized_target}`.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    payload = {
+        "profile": (profile.strip() or normalized_target),
+        "target": normalized_target,
+        "optimizer": optimizer.strip(),
+        "source_nodes": selected_nodes,
+        "trace_paths": {
+            node_id: str(store.artifact_path(run_id, node_id, "trace.jsonl"))
+            for node_id in selected_nodes
+        },
+        "workspace_dir": record.pipeline.working_dir,
+        "run_id": run_id,
+    }
+    try:
+        result = run_evolution_from_payload(payload)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == StructuredOutputFormat.JSON:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    typer.echo(_render_evolution_summary(result))
+
+
+@app.command("tuned-agents")
+def tuned_agents(
+    workspace: str = typer.Option(".", help="Workspace root that holds `.agentflow/tuned_agents`."),
+    output: StructuredOutputFormat = typer.Option(
+        StructuredOutputFormat.SUMMARY,
+        "--output",
+        help="Structured output format for tuned agent listings.",
+    ),
+) -> None:
+    records = list_tuned_agent_records(Path(workspace).expanduser().resolve())
+    if output == StructuredOutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                [record.model_dump(mode="json") for record in records],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    typer.echo(_render_tuned_agents_summary(records))
+
+
+@app.command("tuned-agent")
+def tuned_agent(
+    name: str,
+    workspace: str = typer.Option(".", help="Workspace root that holds `.agentflow/tuned_agents`."),
+    output: StructuredOutputFormat = typer.Option(
+        StructuredOutputFormat.SUMMARY,
+        "--output",
+        help="Structured output format for tuned agent details.",
+    ),
+) -> None:
+    records = {record.name: record for record in list_tuned_agent_records(Path(workspace).expanduser().resolve())}
+    record = records.get(name)
+    if record is None:
+        typer.echo(f"Tuned agent `{name}` not found.", err=True)
+        raise typer.Exit(code=1)
+    latest = resolve_tuned_agent_version(Path(workspace).expanduser().resolve(), name)
+    payload = record.model_dump(mode="json")
+    payload["latest"] = latest.model_dump(mode="json") if latest is not None else None
+    if output == StructuredOutputFormat.JSON:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(_render_tuned_agent_detail(record))
+
+
+@app.command()
 def inspect(
     path: str,
     node: list[str] = typer.Option(None, "--node", "-n", help="Inspect only the selected node ids."),
@@ -2190,7 +2346,7 @@ def run(
 
 @app.command()
 def smoke(
-    path: str | None = typer.Argument(None, help="Optional pipeline path. Defaults to the bundled real-agent smoke example."),
+    path: str = typer.Argument("", help="Optional pipeline path. Defaults to the bundled real-agent smoke example."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
     output: RunOutputFormat = typer.Option(RunOutputFormat.SUMMARY, "--output", help="Result output format."),
@@ -2207,7 +2363,7 @@ def smoke(
 ) -> None:
     selected_path = path or default_smoke_pipeline_path()
     pipeline = _load_pipeline_with_optional_smoke_preflight(
-        path,
+        path or None,
         selected_path,
         preflight,
         output,
@@ -2218,7 +2374,7 @@ def smoke(
 
 @app.command("check-local")
 def check_local(
-    path: str | None = typer.Argument(None, help="Optional pipeline path. Defaults to the bundled real-agent smoke example."),
+    path: str = typer.Argument("", help="Optional pipeline path. Defaults to the bundled real-agent smoke example."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
     output: RunOutputFormat = typer.Option(
@@ -2288,8 +2444,8 @@ def toolchain_local(
 
 @app.command()
 def doctor(
-    path: str | None = typer.Argument(
-        None,
+    path: str = typer.Argument(
+        "",
         help="Optional pipeline path. Adds pipeline-specific local shell bootstrap warnings to the doctor report.",
     ),
     output: StructuredOutputFormat = typer.Option(
@@ -2303,7 +2459,7 @@ def doctor(
         help="Include a ready-to-paste bash login bridge suggestion when local shell startup needs one.",
     ),
 ) -> None:
-    report, pipeline, _loaded_pipeline = _doctor_report_for_path(path)
+    report, pipeline, _loaded_pipeline = _doctor_report_for_path(path or None)
     include_shell_bridge, recommendation = _doctor_shell_bridge_output(
         report,
         requested=shell_bridge,

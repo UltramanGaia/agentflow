@@ -33,6 +33,7 @@ from agentflow.specs import (
 )
 from agentflow.store import RunStore
 from agentflow.success import evaluate_success
+from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.traces import create_trace_parser
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_value, utcnow_iso
 
@@ -494,49 +495,52 @@ class Orchestrator:
             current_tick_number=periodic_tick_number,
             current_tick_started_at=periodic_tick_started_at,
         )
+        execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
+        execution_node = execution_resolution.node
+        runtime_agent = execution_resolution.runtime_agent
         # Create git worktree if enabled (local nodes only get a worktree directory)
         worktree_dir = None
-        if pipeline.use_worktree and node.target.kind == "local":
+        if pipeline.use_worktree and execution_node.target.kind == "local":
             from agentflow.worktree import create_worktree, is_git_repo
             if is_git_repo(pipeline.working_path):
                 try:
                     worktree_dir = create_worktree(pipeline.working_path, node_id, run_id)
                     from types import SimpleNamespace
-                    wt_target = SimpleNamespace(**{k: getattr(node.target, k) for k in node.target.model_fields})
+                    wt_target = SimpleNamespace(**{k: getattr(execution_node.target, k) for k in execution_node.target.model_fields})
                     wt_target.cwd = str(worktree_dir)
-                    node = SimpleNamespace(
-                        id=node.id, agent=node.agent, prompt=node.prompt,
-                        target=wt_target, timeout_seconds=node.timeout_seconds,
-                        retries=node.retries, retry_backoff_seconds=node.retry_backoff_seconds,
-                        success_criteria=node.success_criteria, tools=node.tools,
-                        model=node.model, capture=node.capture, env=node.env,
-                        extra_args=node.extra_args, provider=node.provider,
-                        mcps=node.mcps, skills=node.skills, schedule=node.schedule,
-                        fanout_group=node.fanout_group, fanout_member=node.fanout_member,
-                        on_failure_restart=node.on_failure_restart,
-                        fanout_dependencies=getattr(node, 'fanout_dependencies', {}),
-                        executable=node.executable,
-                        description=node.description,
-                        repo_instructions_mode=node.repo_instructions_mode,
+                    execution_node = SimpleNamespace(
+                        id=execution_node.id, agent=execution_node.agent, prompt=execution_node.prompt,
+                        target=wt_target, timeout_seconds=execution_node.timeout_seconds,
+                        retries=execution_node.retries, retry_backoff_seconds=execution_node.retry_backoff_seconds,
+                        success_criteria=execution_node.success_criteria, tools=execution_node.tools,
+                        model=execution_node.model, capture=execution_node.capture, env=execution_node.env,
+                        extra_args=execution_node.extra_args, provider=execution_node.provider,
+                        mcps=execution_node.mcps, skills=execution_node.skills, schedule=execution_node.schedule,
+                        fanout_group=execution_node.fanout_group, fanout_member=execution_node.fanout_member,
+                        on_failure_restart=execution_node.on_failure_restart,
+                        fanout_dependencies=getattr(execution_node, 'fanout_dependencies', {}),
+                        executable=execution_node.executable,
+                        description=execution_node.description,
+                        repo_instructions_mode=execution_node.repo_instructions_mode,
                     )
                 except Exception as exc:
                     await self._publish(run_id, "node_trace", node_id=node_id,
                         trace={"kind": "warning", "title": f"Worktree failed: {exc}"})
 
-        paths = self._build_paths(pipeline, run_id, node_id, node.target)
+        paths = self._build_paths(pipeline, run_id, node_id, execution_node.target)
 
         # Inject scratchboard file location into prompt
         scratchboard = self._scratchboards.get(run_id)
         if scratchboard is not None:
             from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX
-            if node.target.kind == "local":
+            if execution_node.target.kind == "local":
                 sb_path = str(scratchboard.path)
             else:
                 sb_path = f"{paths.target_runtime_dir}/{SCRATCHBOARD_FILENAME}"
             prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
-        adapter = self.adapters.get(node.agent)
-        runner = self.runners.get(node.target.kind)
-        parser = create_trace_parser(node.agent, node.id)
+        adapter = self.adapters.get(runtime_agent)
+        runner = self.runners.get(execution_node.target.kind)
+        parser = create_trace_parser(runtime_agent, node.id)
         periodic_actions: _PeriodicActionEnvelope | None = None
         periodic_action_parse_error: str | None = None
 
@@ -551,17 +555,17 @@ class Orchestrator:
             result.current_attempt = attempt_number
             result.attempts.append(attempt)
             parser.start_attempt(attempt_number)
-            prepared = adapter.prepare(node, prompt, paths)
+            prepared = adapter.prepare(execution_node, prompt, paths)
             # Forward local credentials to remote targets when enabled
             # EC2/ECS: always forward (ephemeral, no pre-existing config)
             # SSH: only if forward_credentials=True (remote has its own identity)
             should_forward = (
-                node.target.kind in ("ec2", "ecs")
-                or (node.target.kind == "ssh" and getattr(node.target, "forward_credentials", False))
+                execution_node.target.kind in ("ec2", "ecs")
+                or (execution_node.target.kind == "ssh" and getattr(execution_node.target, "forward_credentials", False))
             )
             if should_forward:
                 from agentflow.cloud.aws import collect_local_credentials
-                local_creds = collect_local_credentials(node.agent.value)
+                local_creds = collect_local_credentials(runtime_agent.value)
                 merged = {**local_creds, **prepared.env}
                 prepared = PreparedExecution(
                     command=prepared.command, env=merged, cwd=prepared.cwd,
@@ -569,10 +573,10 @@ class Orchestrator:
                     stdin=prepared.stdin,
                 )
             # Inject scratchboard file into runtime_files for remote targets
-            if scratchboard is not None and node.target.kind not in ("local",):
+            if scratchboard is not None and execution_node.target.kind not in ("local",):
                 from agentflow.scratchboard import SCRATCHBOARD_FILENAME
                 prepared.runtime_files[SCRATCHBOARD_FILENAME] = scratchboard.read()
-            plan = runner.plan_execution(node, prepared, paths)
+            plan = runner.plan_execution(execution_node, prepared, paths)
             await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
             await self.store.append_artifact_text(
                 run_id,
@@ -614,7 +618,7 @@ class Orchestrator:
                     await self._publish_trace(run_id, node_id, event)
 
             raw = await runner.execute(
-                node,
+                execution_node,
                 prepared,
                 paths,
                 on_output,
@@ -626,8 +630,8 @@ class Orchestrator:
             result.final_response = parser.finalize()
             if not result.final_response and parser.supports_raw_stdout_fallback():
                 result.final_response = "\n".join(attempt_stdout_lines).strip()
-            result.output = result.final_response if node.capture.value == "final" else "\n".join(attempt_stdout_lines)
-            success_ok, success_details = evaluate_success(node, result, paths.host_workdir)
+            result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
+            success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
             result.success = success_ok
             result.success_details = success_details
             attempt.finished_at = utcnow_iso()
@@ -655,7 +659,7 @@ class Orchestrator:
                 result.status = NodeStatus.READY if periodic_tick_number is not None else NodeStatus.COMPLETED
                 result.finished_at = attempt.finished_at
                 if periodic_tick_number is not None:
-                    if node.schedule and node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
+                    if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
                         periodic_actions, periodic_action_parse_error = self._parse_periodic_actions(result.final_response)
                         if periodic_actions is not None and periodic_actions.analysis is not None:
                             result.output = periodic_actions.analysis

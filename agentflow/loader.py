@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from agentflow.specs import PipelineSpec, expand_compact_nodes
 
 
@@ -14,7 +16,7 @@ def load_pipeline_from_path(path: str | Path) -> PipelineSpec:
     if path.suffix == ".py":
         return _load_pipeline_from_python(path)
     data = path.read_text(encoding="utf-8")
-    return load_pipeline_from_text(data, base_dir=path.parent.resolve())
+    return load_pipeline_from_text(data, base_dir=path.parent.resolve(), source_path=path)
 
 
 def _load_pipeline_from_python(path: Path) -> PipelineSpec:
@@ -30,8 +32,23 @@ def _load_pipeline_from_python(path: Path) -> PipelineSpec:
     return load_pipeline_from_text(result.stdout, base_dir=path.parent.resolve())
 
 
-def load_pipeline_from_text(data: str, *, base_dir: str | Path | None = None) -> PipelineSpec:
-    parsed = json.loads(data)
+def _parse_structured_text(data: str, *, source_path: str | Path | None = None) -> Any:
+    suffix = str(Path(source_path).suffix).lower() if source_path is not None else ""
+    if suffix in {".yaml", ".yml"}:
+        return yaml.safe_load(data)
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        return yaml.safe_load(data)
+
+
+def load_pipeline_from_text(
+    data: str,
+    *,
+    base_dir: str | Path | None = None,
+    source_path: str | Path | None = None,
+) -> PipelineSpec:
+    parsed = _parse_structured_text(data, source_path=source_path)
     return load_pipeline_from_data(parsed, base_dir=base_dir)
 
 

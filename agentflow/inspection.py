@@ -34,7 +34,8 @@ from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.prepared import build_execution_paths
 from agentflow.runners.registry import RunnerRegistry, default_runner_registry
-from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, resolve_execution_provider
+from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name, resolve_execution_provider
+from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, redact_sensitive_shell_value
 
 _REDACTED = "<redacted>"
@@ -920,7 +921,7 @@ def _local_bootstrap_sets_env_var(
 def _format_launch_env_inheritance_detail(node: NodeSpec, detail: dict[str, Any]) -> str:
     key = str(detail["key"])
     current_value = str(detail["current_value"])
-    agent_name = node.agent.value.capitalize()
+    agent_name = normalize_agent_name(node.agent).capitalize()
     return (
         f"Launch inherits current `{key}` value `{current_value}`; configure `provider` or `node.env` "
         f"explicitly if you want {agent_name} routing pinned for this node."
@@ -1011,21 +1012,24 @@ def build_launch_inspection(
 
         prompt, render_error = _render_prompt_for_inspection(pipeline, node, placeholder_results)
         uses_placeholder_results = uses_placeholder_results or _prompt_uses_placeholder_results(prompt)
-        resolved_provider = resolve_execution_provider(node.provider, node.agent)
+        execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
+        execution_node = execution_resolution.node
+        resolved_provider = resolve_execution_provider(execution_node.provider, execution_node.agent)
         paths = build_execution_paths(
             base_dir=base_dir,
             pipeline_workdir=pipeline.working_path,
             run_id="inspect",
             node_id=node.id,
-            node_target=node.target,
+            node_target=execution_node.target,
             create_runtime_dir=False,
         )
-        prepared = adapters.get(node.agent).prepare(node, prompt, paths)
-        launch = runners.get(node.target.kind).plan_execution(node, prepared, paths)
+        prepared = adapters.get(execution_resolution.runtime_agent).prepare(execution_node, prompt, paths)
+        launch = runners.get(execution_node.target.kind).plan_execution(execution_node, prepared, paths)
 
         node_plan = {
             "id": node.id,
-            "agent": node.agent.value,
+            "agent": normalize_agent_name(node.agent),
+            "runtime_agent": execution_resolution.runtime_agent.value,
             "model": node.model,
             "schedule": node.schedule.model_dump(mode="json") if node.schedule is not None else None,
             "tools": node.tools.value,
@@ -1035,7 +1039,7 @@ def build_launch_inspection(
             "depends_on": list(node.depends_on),
             "provider": node.provider.model_dump(mode="json") if hasattr(node.provider, "model_dump") else node.provider,
             "resolved_provider": resolved_provider.model_dump(mode="json") if resolved_provider is not None else None,
-            "target": _sanitize_target(node.target.model_dump(mode="json")),
+            "target": _sanitize_target(execution_node.target.model_dump(mode="json")),
             "rendered_prompt": prompt,
             "rendered_prompt_preview": _preview_text(prompt, limit=120),
             "render_error": render_error,

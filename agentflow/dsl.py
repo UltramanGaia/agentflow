@@ -9,7 +9,7 @@ import json
 from types import TracebackType
 from typing import Any
 
-from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec
+from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name
 
 
 _CURRENT_GRAPH: ContextVar["Graph | None"] = ContextVar("_CURRENT_GRAPH", default=None)
@@ -34,7 +34,7 @@ class _FailureEdge:
 class NodeBuilder:
     dag: "Graph"
     id: str
-    agent: AgentKind
+    agent: AgentKind | str
     prompt: str
     kwargs: dict[str, Any] = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
@@ -43,7 +43,7 @@ class NodeBuilder:
         self.dag._register(self)
 
     def __repr__(self) -> str:
-        return f"NodeBuilder(id={json.dumps(self.id)}, agent={json.dumps(self.agent.value)})"
+        return f"NodeBuilder(id={json.dumps(self.id)}, agent={json.dumps(normalize_agent_name(self.agent))})"
 
     def __rshift__(self, other: "NodeBuilder | list[NodeBuilder]") -> "NodeBuilder | list[NodeBuilder]":
         if isinstance(other, list):
@@ -201,7 +201,7 @@ def _current_graph() -> Graph:
     return g
 
 
-def _node(agent: AgentKind, *, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+def _node(agent: AgentKind | str, *, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return NodeBuilder(dag=_current_graph(), id=task_id, agent=agent, prompt=prompt, kwargs=kwargs)
 
 
@@ -377,3 +377,62 @@ def sync(*, task_id: str, mode: str = "full", **kwargs: Any) -> NodeBuilder:
     Uses rclone if available, falls back to tar + scp.
     """
     return _node(AgentKind.SYNC, task_id=task_id, prompt=mode, **kwargs)
+
+
+def agent(name: str, *, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("agent name must not be empty")
+    return _node(normalized, task_id=task_id, prompt=prompt, **kwargs)
+
+
+def evolve(
+    nodes: NodeBuilder | list[NodeBuilder],
+    *,
+    target: str = "codex",
+    optimizer: str = "codex",
+    tuned_agent: str | None = None,
+    task_id: str | None = None,
+    **kwargs: Any,
+) -> NodeBuilder:
+    if isinstance(nodes, NodeBuilder):
+        source_nodes = [nodes]
+    else:
+        source_nodes = list(nodes)
+    if not source_nodes:
+        raise ValueError("evolve() requires at least one source node")
+
+    normalized_target = target.strip()
+    filtered_nodes = [node for node in source_nodes if normalize_agent_name(node.agent) == normalized_target]
+    if not filtered_nodes:
+        raise ValueError(f"evolve() found no source nodes with target agent `{normalized_target}`")
+
+    profile = (tuned_agent or target).strip()
+    if not profile:
+        raise ValueError("evolve() requires a non-empty tuned agent profile")
+
+    payload = {
+        "profile": profile,
+        "target": normalized_target,
+        "optimizer": optimizer.strip(),
+        "source_nodes": [node.id for node in filtered_nodes],
+        "trace_paths": {
+            node.id: f"{{{{ nodes.{node.id}.artifacts.trace_jsonl }}}}"
+            for node in filtered_nodes
+        },
+        "workspace_dir": "{{ pipeline.working_dir }}",
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    code = (
+        "import json\n"
+        "from agentflow.tuned_agents import run_evolution_from_payload\n\n"
+        f"payload = json.loads(r'''{payload_json}''')\n"
+        "result = run_evolution_from_payload(payload)\n"
+        "print(json.dumps(result, ensure_ascii=False))\n"
+    )
+    evolve_task_id = task_id or f"evolve_{profile.replace('-', '_')}"
+    node = python_node(task_id=evolve_task_id, code=code, **kwargs)
+    for source in filtered_nodes:
+        if source.id not in node.depends_on:
+            node.depends_on.append(source.id)
+    return node

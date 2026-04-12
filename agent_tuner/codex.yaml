@@ -1,0 +1,167 @@
+name: codex_tuned
+base_agent: codex
+repo_url: https://github.com/openai/codex.git
+default_branch: main
+workdir_subpath: codex-rs
+build_command: cargo build -p codex-cli
+test_command: cargo test -p codex-cli -p codex-core -p codex-tools -p codex-mcp -p codex-protocol
+smoke_command: "{executable} --help >/dev/null"
+executable_path: target/debug/codex
+max_attempts: 3
+evolution_prompt: |
+  Evolve Codex using the copied traces from the selected Codex nodes.
+
+  Primary objective:
+  - Improve Codex behavior based on the failures, friction, and missed opportunities visible in those traces.
+
+  Explicitly allowed modifications:
+  - System prompts, developer instructions, prompt templates, review prompts, collaboration-mode templates, and other instruction scaffolding.
+  - Tool registration, tool availability, tool routing, tool defaults, tool descriptions, tool metadata, and related schemas or configuration.
+  - Built-in agent roles, skills surfaced to the model, and agent orchestration behavior where it materially improves the traced workflows.
+  - Use the `tunable_surfaces` mapping below as the file-level source of truth for where each adjustable surface is implemented.
+
+  Constraints:
+  - Prefer the smallest coherent set of changes that clearly addresses the traced issues.
+  - Keep public interfaces and existing workflows stable unless the traces justify a behavior change.
+  - Add or update tests near the edited code when behavior changes.
+tunable_surfaces:
+  - name: Base model prompts and prompt assembly
+    notes: Primary coding-agent system prompts, prompt variants, and the main prompt assembly path.
+    paths:
+      - core/gpt_5_codex_prompt.md
+      - core/gpt-5.1-codex-max_prompt.md
+      - core/gpt-5.2-codex_prompt.md
+      - core/gpt_5_1_prompt.md
+      - core/gpt_5_2_prompt.md
+      - core/prompt_with_apply_patch_instructions.md
+      - core/src/codex.rs
+  - name: Model instruction templates and personalities
+    notes: Template fragments that shape instruction rendering and assistant tone.
+    paths:
+      - core/templates/model_instructions/gpt-5.2-codex_instructions_template.md
+      - core/templates/personalities/gpt-5.2-codex_friendly.md
+      - core/templates/personalities/gpt-5.2-codex_pragmatic.md
+  - name: Review prompts and review-thread messaging
+    notes: Review mode system prompt, request rendering, and final review history messages.
+    paths:
+      - core/review_prompt.md
+      - core/src/client_common.rs
+      - core/src/review_prompts.rs
+      - core/templates/review/exit_success.xml
+      - core/templates/review/exit_interrupted.xml
+      - core/templates/review/history_message_completed.md
+      - core/templates/review/history_message_interrupted.md
+  - name: Collaboration modes
+    notes: Default, execute, pair-programming, and plan-mode collaboration instructions.
+    paths:
+      - collaboration-mode-templates/templates/default.md
+      - collaboration-mode-templates/templates/execute.md
+      - collaboration-mode-templates/templates/pair_programming.md
+      - collaboration-mode-templates/templates/plan.md
+      - core/templates/collab/experimental_prompt.md
+  - name: Sub-agent roles and orchestration prompts
+    notes: Built-in sub-agent role definitions and orchestrator-facing role scaffolding.
+    paths:
+      - core/src/agent/role.rs
+      - core/src/agent/builtins/explorer.toml
+      - core/src/agent/builtins/awaiter.toml
+      - core/templates/agents/orchestrator.md
+  - name: Tool registry, defaults, and code-mode exposure
+    notes: Global tool registration, tool defaults, model-visible tool specs, and code-mode tool shaping.
+    paths:
+      - core/src/tools/spec.rs
+      - core/src/tools/registry.rs
+      - tools/src/tool_registry_plan.rs
+      - tools/src/tool_registry_plan_types.rs
+      - tools/src/tool_config.rs
+      - tools/src/tool_spec.rs
+      - tools/src/tool_definition.rs
+      - tools/src/code_mode.rs
+      - core/src/tools/code_mode/mod.rs
+      - core/src/tools/code_mode/execute_handler.rs
+      - core/src/tools/code_mode/wait_handler.rs
+  - name: Shell, exec, and permission request tools
+    notes: Shell tool schemas, exec-command behavior, permission prompting, and runtime handlers.
+    paths:
+      - tools/src/local_tool.rs
+      - core/src/unified_exec/process_manager.rs
+      - core/src/tools/handlers/shell.rs
+      - core/src/tools/handlers/request_permissions.rs
+      - core/src/tools/handlers/unified_exec.rs
+  - name: Apply-patch and editing tools
+    notes: Patch grammar, freeform/function apply-patch descriptions, and runtime execution.
+    paths:
+      - tools/src/apply_patch_tool.rs
+      - tools/src/tool_apply_patch.lark
+      - core/src/tools/handlers/apply_patch.rs
+      - core/src/tools/runtimes/apply_patch.rs
+  - name: Planning and request-user-input tools
+    notes: Plan tool wording, request-user-input descriptions, and runtime handlers.
+    paths:
+      - tools/src/plan_tool.rs
+      - tools/src/request_user_input_tool.rs
+      - core/src/tools/handlers/plan.rs
+      - core/src/tools/handlers/request_user_input.rs
+  - name: Multi-agent and batch-agent tools
+    notes: Spawn/wait/send/close tool descriptions and the runtime orchestration for sub-agents and batch jobs.
+    paths:
+      - tools/src/agent_tool.rs
+      - tools/src/agent_job_tool.rs
+      - core/src/tools/handlers/multi_agents.rs
+      - core/src/tools/handlers/multi_agents_v2.rs
+      - core/src/tools/handlers/agent_jobs.rs
+  - name: Tool search and tool suggestion UX
+    notes: Search-tool descriptions, suggestion metadata, and runtime handlers for discovering deferred tools/connectors.
+    paths:
+      - tools/src/tool_discovery.rs
+      - core/templates/search_tool/tool_description.md
+      - core/templates/search_tool/tool_suggest_description.md
+      - core/src/tools/handlers/tool_search.rs
+      - core/src/tools/handlers/tool_suggest.rs
+  - name: Image and utility tools
+    notes: View-image and utility tool descriptions plus their runtime handlers.
+    paths:
+      - tools/src/view_image.rs
+      - tools/src/utility_tool.rs
+      - core/src/tools/handlers/view_image.rs
+      - core/src/tools/handlers/list_dir.rs
+  - name: MCP tool descriptions, exposure, and approval messaging
+    notes: MCP tool annotation, namespace exposure, approval text, and model-visible MCP wrappers.
+    paths:
+      - codex-mcp/src/mcp_connection_manager.rs
+      - core/src/mcp_tool_exposure.rs
+      - core/src/mcp_tool_approval_templates.rs
+      - core/src/consequential_tool_message_templates.json
+      - tools/src/mcp_tool.rs
+      - tools/src/mcp_resource_tool.rs
+      - core/src/tools/handlers/mcp.rs
+      - core/src/tools/handlers/mcp_resource.rs
+  - name: Apps, project-doc, and user-instruction context injection
+    notes: App/connectors instructions, AGENTS.md/project-doc rendering, and user instruction ingestion.
+    paths:
+      - core/src/apps/render.rs
+      - core/src/project_doc.rs
+      - core/hierarchical_agents_message.md
+      - instructions/src/lib.rs
+      - instructions/src/fragment.rs
+      - instructions/src/user_instructions.rs
+  - name: Compaction and memories
+    notes: Auto-compaction prompts, memory prompts, and memory stage configuration.
+    paths:
+      - core/src/compact.rs
+      - core/templates/compact/prompt.md
+      - core/templates/compact/summary_prefix.md
+      - core/src/memories/mod.rs
+      - core/src/memories/prompts.rs
+      - core/templates/memories/consolidation.md
+      - core/templates/memories/read_path.md
+      - core/templates/memories/stage_one_input.md
+      - core/templates/memories/stage_one_system.md
+  - name: Realtime and guardian policy prompts
+    notes: Realtime backend prompting and guardian/approval policy prompt templates.
+    paths:
+      - core/src/realtime_prompt.rs
+      - core/templates/realtime/backend_prompt.md
+      - core/src/guardian/prompt.rs
+      - core/src/guardian/policy.md
+      - core/src/guardian/policy_template.md

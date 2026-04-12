@@ -7,7 +7,13 @@ import re
 import shlex
 from collections import Counter
 from datetime import datetime, timezone
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        pass
 from itertools import product
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -76,6 +82,26 @@ class RunStatus(StrEnum):
     CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+def normalize_agent_name(value: str | AgentKind) -> str:
+    if isinstance(value, AgentKind):
+        return value.value
+    return str(value).strip()
+
+
+def builtin_agent_kind(value: str | AgentKind | None) -> AgentKind | None:
+    if isinstance(value, AgentKind):
+        return value
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        return AgentKind(normalized)
+    except ValueError:
+        return None
 
 
 class ProviderConfig(BaseModel):
@@ -201,34 +227,38 @@ def provider_uses_kimi_anthropic_auth(provider: ProviderConfig | None) -> bool:
     return (provider.name or "").strip().lower() in {"kimi", "moonshot", "moonshot-ai"}
 
 
-def resolve_provider(value: str | ProviderConfig | None, agent: AgentKind) -> ProviderConfig | None:
+def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
     if value is None:
         return None
     if isinstance(value, ProviderConfig):
         return value
 
+    resolved_agent = builtin_agent_kind(agent)
+    if resolved_agent is None:
+        return ProviderConfig(name=value)
+
     alias = value.strip().lower()
-    if alias == "openai" and agent == AgentKind.CODEX:
+    if alias == "openai" and resolved_agent == AgentKind.CODEX:
         return ProviderConfig(
             name="openai",
             base_url="https://api.openai.com/v1",
             api_key_env="OPENAI_API_KEY",
             wire_api="responses",
         )
-    if alias == "anthropic" and agent == AgentKind.CLAUDE:
+    if alias == "anthropic" and resolved_agent == AgentKind.CLAUDE:
         return ProviderConfig(
             name="anthropic",
             base_url="https://api.anthropic.com",
             api_key_env="ANTHROPIC_API_KEY",
         )
     if alias in {"kimi", "moonshot", "moonshot-ai"}:
-        if agent == AgentKind.CLAUDE:
+        if resolved_agent == AgentKind.CLAUDE:
             return ProviderConfig(
                 name="kimi",
                 base_url="https://api.kimi.com/coding/",
                 api_key_env="ANTHROPIC_API_KEY",
             )
-        if agent == AgentKind.KIMI:
+        if resolved_agent == AgentKind.KIMI:
             return ProviderConfig(
                 name="moonshot",
                 base_url="https://api.moonshot.ai/v1",
@@ -241,11 +271,11 @@ def resolve_provider(value: str | ProviderConfig | None, agent: AgentKind) -> Pr
     return ProviderConfig(name=value)
 
 
-def resolve_execution_provider(value: str | ProviderConfig | None, agent: AgentKind) -> ProviderConfig | None:
+def resolve_execution_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
     provider = resolve_provider(value, agent)
     if provider is not None:
         return provider
-    if agent == AgentKind.KIMI:
+    if builtin_agent_kind(agent) == AgentKind.KIMI:
         return ProviderConfig(
             name="moonshot",
             base_url="https://api.moonshot.ai/v1",
@@ -722,7 +752,7 @@ class NodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    agent: AgentKind
+    agent: AgentKind | str
     prompt: str
     depends_on: list[str] = Field(default_factory=list)
     on_failure_restart: list[str] = Field(default_factory=list)
@@ -747,6 +777,16 @@ class NodeSpec(BaseModel):
     fanout_group: str | None = Field(default=None, exclude=True)
     fanout_member: dict[str, Any] | None = Field(default=None, exclude=True)
     fanout_dependencies: dict[str, list[str]] = Field(default_factory=dict, exclude=True)
+
+    @field_validator("agent")
+    @classmethod
+    def validate_agent(cls, value: AgentKind | str) -> AgentKind | str:
+        if isinstance(value, AgentKind):
+            return value
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("`agent` must not be empty")
+        return builtin_agent_kind(normalized) or normalized
 
     @model_validator(mode="after")
     def ensure_unique_dependencies(self) -> "NodeSpec":
@@ -1302,8 +1342,9 @@ def apply_node_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         merged_node = deepcopy(node_defaults or {})
         raw_agent = node.get("agent", merged_node.get("agent"))
         if raw_agent is not None:
-            agent = raw_agent if isinstance(raw_agent, AgentKind) else AgentKind(str(raw_agent).strip())
-            merged_node = _merge_node_payloads(merged_node, agent_defaults.get(agent, {}))
+            agent = builtin_agent_kind(raw_agent)
+            if agent is not None:
+                merged_node = _merge_node_payloads(merged_node, agent_defaults.get(agent, {}))
         merged_nodes.append(_merge_node_payloads(merged_node, dict(node)))
 
     resolved["nodes"] = merged_nodes

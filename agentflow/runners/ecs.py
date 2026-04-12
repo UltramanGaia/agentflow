@@ -16,7 +16,7 @@ from agentflow.runners.base import (
     Runner,
     StreamCallback,
 )
-from agentflow.specs import NodeSpec
+from agentflow.specs import NodeSpec, normalize_agent_name
 
 
 class ECSRunner(Runner):
@@ -143,7 +143,7 @@ class ECSRunner(Runner):
 
         # Build the command with auth setup prepended
         agent_cmd = " ".join(shlex.quote(part) for part in prepared.command)
-        auth_setup = agent_auth_setup(node.agent.value, prepared.env)
+        auth_setup = agent_auth_setup(normalize_agent_name(node.agent), prepared.env)
         cmd_str = f"{auth_setup} && {agent_cmd}" if auth_setup else agent_cmd
 
         resp = ecs.register_task_definition(
@@ -313,7 +313,7 @@ class ECSRunner(Runner):
 
             # Auto-forward local credentials if not in env
             from agentflow.cloud.aws import collect_local_credentials
-            local_creds = collect_local_credentials(node.agent.value)
+            local_creds = collect_local_credentials(normalize_agent_name(node.agent))
             merged_env = {**local_creds, **prepared.env}
             prepared = PreparedExecution(
                 command=prepared.command,

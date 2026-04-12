@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from agentflow.skills import compile_skill_prelude
-from agentflow.specs import NodeResult, NodeSpec, NodeStatus, PipelineSpec
+from agentflow.specs import NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name
 from agentflow.utils import render_template
 
 
@@ -123,7 +123,7 @@ def _current_node_context(
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
         "id": node.id,
-        "agent": node.agent.value,
+        "agent": normalize_agent_name(node.agent),
         "depends_on": list(node.depends_on),
     }
     if node.fanout_group:
