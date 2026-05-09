@@ -8,7 +8,7 @@ import pytest
 from agentflow.agents.base import AgentAdapter
 from agentflow.orchestrator import Orchestrator
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.runner import LaunchPlan, RawExecutionResult, Runner
+from agentflow.runner import LaunchPlan, RawExecutionResult, default_launch_plan
 from agentflow.specs import (
     AgentKind,
     LocalTarget,
@@ -38,7 +38,7 @@ class CapturingAdapter(AgentAdapter):
         )
 
 
-class CapturingRunner(Runner):
+class CapturingRunner:
     def __init__(self) -> None:
         self.node: NodeSpec | None = None
         self.paths: ExecutionPaths | None = None
@@ -51,7 +51,7 @@ class CapturingRunner(Runner):
     ) -> LaunchPlan:
         self.node = node
         self.paths = paths
-        return super().plan_execution(node, prepared, paths)
+        return default_launch_plan(prepared)
 
     async def execute(
         self,
@@ -72,14 +72,6 @@ class SingleAdapterRegistry:
 
     def get(self, kind: AgentKind) -> AgentAdapter:
         return self.adapter
-
-
-class SingleRunnerRegistry:
-    def __init__(self, runner: Runner) -> None:
-        self.runner = runner
-
-    def get(self, kind: str) -> Runner:
-        return self.runner
 
 
 def test_worktree_execution_preserves_node_and_target_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,7 +104,7 @@ def test_worktree_execution_preserves_node_and_target_models(tmp_path: Path, mon
     orchestrator = Orchestrator(
         store=store,
         adapters=SingleAdapterRegistry(adapter),
-        runners=SingleRunnerRegistry(runner),
+        runner=runner,
     )
 
     asyncio.run(orchestrator._execute_node("run", "node"))

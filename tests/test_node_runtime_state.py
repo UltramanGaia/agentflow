@@ -8,7 +8,7 @@ from agentflow.agents.base import AgentAdapter
 from agentflow.orchestrator import Orchestrator
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.runtime_state import NodeRuntimeState
-from agentflow.runner import LaunchPlan, RawExecutionResult, Runner
+from agentflow.runner import LaunchPlan, RawExecutionResult, default_launch_plan
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunRecord, RunStatus
 from agentflow.store import RunStore
 
@@ -23,14 +23,14 @@ class StreamingAdapter(AgentAdapter):
         )
 
 
-class StreamingRunner(Runner):
+class StreamingRunner:
     def plan_execution(
         self,
         node: NodeSpec,
         prepared: PreparedExecution,
         paths: ExecutionPaths,
     ) -> LaunchPlan:
-        return super().plan_execution(node, prepared, paths)
+        return default_launch_plan(prepared)
 
     async def execute(
         self,
@@ -51,14 +51,6 @@ class SingleAdapterRegistry:
 
     def get(self, kind: AgentKind) -> AgentAdapter:
         return self.adapter
-
-
-class SingleRunnerRegistry:
-    def __init__(self, runner: Runner) -> None:
-        self.runner = runner
-
-    def get(self, kind: str) -> Runner:
-        return self.runner
 
 
 def test_node_result_discards_legacy_runtime_fields() -> None:
@@ -101,7 +93,7 @@ def test_orchestrator_persists_result_without_runtime_state(tmp_path: Path) -> N
     orchestrator = Orchestrator(
         store=store,
         adapters=SingleAdapterRegistry(StreamingAdapter()),
-        runners=SingleRunnerRegistry(StreamingRunner()),
+        runner=StreamingRunner(),
     )
 
     asyncio.run(orchestrator._execute_node("run", "node"))

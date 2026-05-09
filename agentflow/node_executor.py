@@ -10,7 +10,7 @@ from agentflow.launch_artifacts import launch_artifact_payload
 from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
 from agentflow.prepared import ExecutionPaths, build_execution_paths
 from agentflow.runtime_state import NodeRuntimeState
-from agentflow.runner import RunnerRegistry
+from agentflow.runner import Runner
 from agentflow.scratchboard_manager import ScratchboardManager
 from agentflow.specs_core import NodeStatus, PeriodicActuationMode
 from agentflow.specs_models import NodeAttempt
@@ -37,7 +37,7 @@ class NodeExecutionOutcome:
 class NodeExecutor:
     store: RunStore
     adapters: AdapterRegistry
-    runners: RunnerRegistry
+    runner: Runner
     worktrees: WorktreeManager
     scratchboards: ScratchboardManager
     publish: PublishEvent
@@ -134,7 +134,6 @@ class NodeExecutor:
 
         prompt += self.scratchboards.prompt_suffix_for_run(run_id)
         adapter = self.adapters.get(runtime_agent)
-        runner = self.runners.get(execution_node.target.kind)
         parser = create_trace_parser(runtime_agent, node.id)
         periodic_actions: PeriodicActionEnvelope | None = None
         periodic_action_parse_error: str | None = None
@@ -151,7 +150,7 @@ class NodeExecutor:
             result.attempts.append(attempt)
             parser.start_attempt(attempt_number)
             prepared = adapter.prepare(execution_node, prompt, paths)
-            plan = runner.plan_execution(execution_node, prepared, paths)
+            plan = self.runner.plan_execution(execution_node, prepared, paths)
             await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
             await self.store.append_artifact_text(
                 run_id,
@@ -194,7 +193,7 @@ class NodeExecutor:
                     runtime_state.trace_events.append(event)
                     await self._publish_trace(run_id, node_id, event)
 
-            raw = await runner.execute(
+            raw = await self.runner.execute(
                 execution_node,
                 prepared,
                 paths,

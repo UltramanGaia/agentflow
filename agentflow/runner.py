@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
-from abc import ABC, abstractmethod
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -39,22 +38,31 @@ class LaunchPlan:
     payload: dict[str, object] | None = None
 
 
-class Runner(ABC):
+def default_launch_plan(prepared: PreparedExecution) -> LaunchPlan:
+    return LaunchPlan(
+        command=list(prepared.command),
+        env=dict(prepared.env),
+        cwd=prepared.cwd,
+        stdin=prepared.stdin,
+        runtime_files=sorted(prepared.runtime_files),
+    )
+
+
+def materialize_runtime_files(base_dir: Path, runtime_files: dict[str, str]) -> None:
+    for relative_path, content in runtime_files.items():
+        target = base_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+
+class Runner(Protocol):
     def plan_execution(
         self,
         node: NodeSpec,
         prepared: PreparedExecution,
         paths: ExecutionPaths,
-    ) -> LaunchPlan:
-        return LaunchPlan(
-            command=list(prepared.command),
-            env=dict(prepared.env),
-            cwd=prepared.cwd,
-            stdin=prepared.stdin,
-            runtime_files=sorted(prepared.runtime_files),
-        )
+    ) -> LaunchPlan: ...
 
-    @abstractmethod
     async def execute(
         self,
         node: NodeSpec,
@@ -62,17 +70,10 @@ class Runner(ABC):
         paths: ExecutionPaths,
         on_output: StreamCallback,
         should_cancel: CancelCallback,
-    ) -> RawExecutionResult:
-        raise NotImplementedError
-
-    def materialize_runtime_files(self, base_dir: Path, runtime_files: dict[str, str]) -> None:
-        for relative_path, content in runtime_files.items():
-            target = base_dir / relative_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+    ) -> RawExecutionResult: ...
 
 
-class LocalRunner(Runner):
+class LocalRunner:
     _TERMINATE_GRACE_SECONDS = 1.0
 
     def _augment_local_env(self, prepared: PreparedExecution, paths: ExecutionPaths) -> dict[str, str]:
@@ -109,13 +110,10 @@ class LocalRunner(Runner):
         command, target_env = self._command_for_target(node, prepared)
         plan_env = self._augment_local_env(prepared, paths)
         plan_env.update(target_env)
-        return LaunchPlan(
-            command=command,
-            env=plan_env,
-            cwd=prepared.cwd,
-            stdin=prepared.stdin,
-            runtime_files=sorted(prepared.runtime_files),
-        )
+        plan = default_launch_plan(prepared)
+        plan.command = command
+        plan.env = plan_env
+        return plan
 
     def _should_suppress_stderr(self, node: NodeSpec, text: str) -> bool:
         del node, text
@@ -158,7 +156,7 @@ class LocalRunner(Runner):
         on_output: StreamCallback,
         should_cancel: CancelCallback,
     ) -> RawExecutionResult:
-        self.materialize_runtime_files(paths.host_runtime_dir, prepared.runtime_files)
+        materialize_runtime_files(paths.host_runtime_dir, prepared.runtime_files)
         ensure_dir(Path(prepared.cwd))
         launch_env = self._augment_local_env(prepared, paths)
         command, target_env = self._command_for_target(node, prepared)
@@ -261,29 +259,13 @@ class LocalRunner(Runner):
         )
 
 
-class RunnerRegistry:
-    def __init__(self) -> None:
-        self._registry: dict[str, Runner] = {
-            "local": LocalRunner(),
-        }
-
-    def register(self, kind: str, runner: Runner) -> None:
-        self._registry[kind] = runner
-
-    def get(self, kind: str) -> Runner:
-        return self._registry[kind]
-
-
-default_runner_registry = RunnerRegistry()
-
-
 __all__ = [
     "CancelCallback",
     "LaunchPlan",
     "LocalRunner",
     "RawExecutionResult",
     "Runner",
-    "RunnerRegistry",
     "StreamCallback",
-    "default_runner_registry",
+    "default_launch_plan",
+    "materialize_runtime_files",
 ]

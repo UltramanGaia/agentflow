@@ -6,7 +6,7 @@ from pathlib import Path
 from agentflow.agents.base import AgentAdapter
 from agentflow.orchestrator import Orchestrator
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.runner import LaunchPlan, RawExecutionResult, Runner
+from agentflow.runner import LaunchPlan, RawExecutionResult, default_launch_plan
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunRecord, RunStatus
 from agentflow.store import RunStore
 
@@ -21,7 +21,7 @@ class StaticAdapter(AgentAdapter):
         )
 
 
-class ExitCodeRunner(Runner):
+class ExitCodeRunner:
     def __init__(self, exit_codes: dict[str, int]) -> None:
         self.exit_codes = exit_codes
 
@@ -31,7 +31,7 @@ class ExitCodeRunner(Runner):
         prepared: PreparedExecution,
         paths: ExecutionPaths,
     ) -> LaunchPlan:
-        return super().plan_execution(node, prepared, paths)
+        return default_launch_plan(prepared)
 
     async def execute(
         self,
@@ -55,14 +55,6 @@ class SingleAdapterRegistry:
 
     def get(self, kind: AgentKind) -> AgentAdapter:
         return self.adapter
-
-
-class SingleRunnerRegistry:
-    def __init__(self, runner: Runner) -> None:
-        self.runner = runner
-
-    def get(self, kind: str) -> Runner:
-        return self.runner
 
 
 def _run_record(tmp_path: Path, pipeline: PipelineSpec) -> RunRecord:
@@ -92,7 +84,7 @@ def test_orchestrator_fail_fast_stage_skips_remaining_nodes(tmp_path: Path) -> N
     orchestrator = Orchestrator(
         store=store,
         adapters=SingleAdapterRegistry(StaticAdapter()),
-        runners=SingleRunnerRegistry(ExitCodeRunner({"fail": 1})),
+        runner=ExitCodeRunner({"fail": 1}),
     )
     remaining = {"later"}
 
@@ -128,7 +120,7 @@ def test_orchestrator_blocked_stage_skips_nodes_with_upstream_failure(tmp_path: 
     orchestrator = Orchestrator(
         store=store,
         adapters=SingleAdapterRegistry(StaticAdapter()),
-        runners=SingleRunnerRegistry(ExitCodeRunner({"fail": 1})),
+        runner=ExitCodeRunner({"fail": 1}),
     )
     remaining = {"blocked"}
     cycle_state = orchestrator._compute_cycle_state("run", pipeline, pipeline.node_map, record, {})

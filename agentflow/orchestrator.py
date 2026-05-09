@@ -22,7 +22,7 @@ from agentflow.periodic_scheduler import PeriodicScheduler
 from agentflow.run_lifecycle import build_resumed_run, copy_resume_artifacts, finalize_cancelled_queued_run
 from agentflow.run_state import PeriodicNodeRuntimeState, RunStateRegistry
 from agentflow.runtime_state import NodeRuntimeState
-from agentflow.runner import RunnerRegistry, default_runner_registry
+from agentflow.runner import LocalRunner, Runner
 from agentflow.scratchboard_manager import ScratchboardManager
 from agentflow.specs import (
     NodeResult,
@@ -63,7 +63,7 @@ class Orchestrator:
 
     store: RunStore
     adapters: AdapterRegistry = default_adapter_registry
-    runners: RunnerRegistry = default_runner_registry
+    runner: Runner = field(default_factory=LocalRunner)
     worktrees: WorktreeManager = field(default_factory=WorktreeManager)
     scratchboards: ScratchboardManager = field(default_factory=ScratchboardManager)
     max_concurrent_runs: int = 2
@@ -117,7 +117,7 @@ class Orchestrator:
         return NodeExecutor(
             store=self.store,
             adapters=self.adapters,
-            runners=self.runners,
+            runner=self.runner,
             worktrees=self.worktrees,
             scratchboards=self.scratchboards,
             publish=self._publish,
