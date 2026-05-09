@@ -267,7 +267,7 @@ _BUNDLED_TEMPLATES = (
     BundledTemplate(
         name="pipeline",
         example_name="airflow_like.py",
-        description="Generic Codex/Claude/Kimi starter DAG.",
+        description="Generic Codex/Claude starter DAG.",
     ),
     BundledTemplate(
         name="codex-repo-sweep-batched",

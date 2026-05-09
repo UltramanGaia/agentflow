@@ -23,24 +23,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from agentflow.local_shell import (
     invalid_bash_long_option_error,
     shell_init_commands,
-    shell_init_uses_kimi_helper,
     shell_wrapper_requires_command_placeholder,
     target_uses_bash,
-    target_uses_login_bash,
     target_uses_interactive_bash,
-    target_disables_bash_login_startup,
-    target_disables_bash_rc_startup,
 )
 
 
 class AgentKind(StrEnum):
     CODEX = "codex"
     CLAUDE = "claude"
-    KIMI = "kimi"
     PI = "pi"
+    GAIA = "gaia"
     PYTHON = "python"
     SHELL = "shell"
-    SYNC = "sync"
 
 
 class ToolAccess(StrEnum):
@@ -85,7 +80,12 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
-_INTERACTIVE_AGENT_KINDS = {AgentKind.CODEX, AgentKind.CLAUDE, AgentKind.KIMI, AgentKind.PI}
+_INTERACTIVE_AGENT_KINDS = {
+    AgentKind.CODEX,
+    AgentKind.CLAUDE,
+    AgentKind.PI,
+    AgentKind.GAIA,
+}
 
 
 def normalize_agent_name(value: str | AgentKind) -> str:
@@ -119,9 +119,6 @@ class ProviderConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
 
-_KIMI_ANTHROPIC_BASE_URL = "https://api.kimi.com/coding/"
-_LOCAL_KIMI_BOOTSTRAP_SHELL_INIT = ("command -v kimi >/dev/null 2>&1", "kimi")
-_LOCAL_BOOTSTRAP_TARGET_KEYS = ("shell", "shell_login", "shell_interactive", "shell_init")
 _FANOUT_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FANOUT_RESERVED_CONTEXT_NAMES = {"fanout", "fanouts", "nodes", "pipeline"}
 _FANOUT_MEMBER_RESERVED_NAMES = {"index", "number", "count", "suffix", "value", "template_id", "node_id"}
@@ -148,31 +145,11 @@ def _normalize_local_bootstrap(value: object) -> str | None:
 
 
 def _local_bootstrap_defaults(bootstrap: str) -> dict[str, Any]:
-    if bootstrap == "kimi":
-        return {
-            "shell": "bash",
-            "shell_login": True,
-            "shell_interactive": True,
-            "shell_init": list(_LOCAL_KIMI_BOOTSTRAP_SHELL_INIT),
-        }
     return {}
 
 
 def _merge_bootstrap_shell_init(bootstrap: str, shell_init: Any) -> str | list[str] | None:
-    defaults = _local_bootstrap_defaults(bootstrap)
-    default_shell_init = defaults.get("shell_init")
-    if default_shell_init is None:
-        return shell_init
-    if shell_init is None:
-        return default_shell_init
-    if bootstrap == "kimi" and shell_init_uses_kimi_helper(shell_init):
-        return shell_init
-
-    extra_commands = list(shell_init_commands(shell_init))
-    if not extra_commands:
-        return default_shell_init
-
-    return [*extra_commands, *shell_init_commands(default_shell_init)]
+    return shell_init
 
 
 def _normalized_provider_base_url(value: str | None) -> str | None:
@@ -218,19 +195,6 @@ def _coerce_base_dir(value: object) -> Path | None:
     return None
 
 
-def provider_uses_kimi_anthropic_auth(provider: ProviderConfig | None) -> bool:
-    if provider is None:
-        return False
-
-    effective_base_url = _normalized_provider_env_base_url(provider, "ANTHROPIC_BASE_URL")
-    if effective_base_url is None:
-        effective_base_url = _normalized_provider_base_url(provider.base_url)
-    if effective_base_url is not None:
-        return effective_base_url == _KIMI_ANTHROPIC_BASE_URL.rstrip("/")
-
-    return (provider.name or "").strip().lower() in {"kimi", "moonshot", "moonshot-ai"}
-
-
 def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
     if value is None:
         return None
@@ -255,37 +219,13 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
             base_url="https://api.anthropic.com",
             api_key_env="ANTHROPIC_API_KEY",
         )
-    if alias in {"kimi", "moonshot", "moonshot-ai"}:
-        if resolved_agent == AgentKind.CLAUDE:
-            return ProviderConfig(
-                name="kimi",
-                base_url="https://api.kimi.com/coding/",
-                api_key_env="ANTHROPIC_API_KEY",
-            )
-        if resolved_agent == AgentKind.KIMI:
-            return ProviderConfig(
-                name="moonshot",
-                base_url="https://api.moonshot.ai/v1",
-                api_key_env="KIMI_API_KEY",
-            )
-        raise ValueError(
-            "provider 'kimi' is not supported for codex nodes because Codex requires an "
-            "OpenAI Responses API backend and Kimi's public endpoints do not expose /responses"
-        )
+    raise ValueError(f"provider alias `{value}` is not supported")
     return ProviderConfig(name=value)
 
 
 def resolve_execution_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
     provider = resolve_provider(value, agent)
-    if provider is not None:
-        return provider
-    if builtin_agent_kind(agent) == AgentKind.KIMI:
-        return ProviderConfig(
-            name="moonshot",
-            base_url="https://api.moonshot.ai/v1",
-            api_key_env="KIMI_API_KEY",
-        )
-    return None
+    return provider
 
 
 class MCPServerSpec(BaseModel):
@@ -367,9 +307,7 @@ class LocalTarget(BaseModel):
         normalized = _normalize_local_bootstrap(value)
         if normalized is None:
             return None
-        if normalized != "kimi":
-            raise ValueError("`target.bootstrap` must be `kimi`")
-        return normalized
+        raise ValueError("`target.bootstrap` is no longer supported")
 
     @field_validator("shell_init")
     @classmethod
@@ -409,107 +347,10 @@ class LocalTarget(BaseModel):
                 joined = ", ".join(f"`target.{field}`" for field in missing_shell_fields)
                 raise ValueError(f"{joined} require `target.shell` on local targets")
 
-        if self.bootstrap == "kimi":
-            target_shell = _shell_program(self.shell) or "this shell"
-            if not target_uses_bash(self):
-                raise ValueError(
-                    f"`target.bootstrap: kimi` requires bash-style shell bootstrap, but `target.shell` resolves "
-                    f"to `{target_shell}`. Use `shell: bash` with `target.shell_interactive: true`, use `bash -lic`, "
-                    "or drop `target.bootstrap` and configure the bootstrap explicitly."
-                )
-            if not target_uses_interactive_bash(self):
-                raise ValueError(
-                    "`target.bootstrap: kimi` requires interactive bash startup so helpers from `~/.bashrc` are "
-                    "available. Set `target.shell_interactive: true`, use `bash -lic`, or drop `target.bootstrap` "
-                    "and configure the bootstrap explicitly."
-                )
-            if target_uses_login_bash(self) and target_disables_bash_login_startup(self):
-                raise ValueError(
-                    "`target.bootstrap: kimi` cannot use bash with `--noprofile` because login startup files will "
-                    "not load the `kimi` helper. Remove `--noprofile` or drop `target.bootstrap` and configure the "
-                    "bootstrap explicitly."
-                )
-            if not target_uses_login_bash(self) and target_disables_bash_rc_startup(self):
-                raise ValueError(
-                    "`target.bootstrap: kimi` cannot use bash with `--norc` because interactive startup will not "
-                    "load `~/.bashrc` and the `kimi` helper will usually be unavailable. Remove `--norc` or drop "
-                    "`target.bootstrap` and configure the bootstrap explicitly."
-                )
         return self
 
 
-class ContainerTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["container"] = "container"
-    image: str
-    engine: str = "docker"
-    workdir_mount: str = "/workspace"
-    runtime_mount: str = "/agentflow-runtime"
-    app_mount: str = "/agentflow-app"
-    extra_args: list[str] = Field(default_factory=list)
-    entrypoint: str | None = None
-
-
-class SSHTarget(BaseModel):
-    """Remote execution via SSH."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    kind: Literal["ssh"] = "ssh"
-    host: str
-    port: int = 22
-    username: str | None = None
-    identity_file: str | None = None
-    remote_workdir: str | None = None
-    forward_credentials: bool = False
-
-
-class EC2Target(BaseModel):
-    """Run agent on a fresh EC2 instance, SSH in, execute, then terminate."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    kind: Literal["ec2"] = "ec2"
-    region: str = "us-east-1"
-    ami: str | None = None
-    instance_type: str = "t3.medium"
-    key_name: str | None = None
-    identity_file: str | None = None
-    security_group_ids: list[str] = Field(default_factory=list)
-    subnet_id: str | None = None
-    username: str = "ubuntu"
-    install_agents: list[str] = Field(default_factory=lambda: ["codex", "claude"])
-    user_data: str | None = None
-    spot: bool = False
-    terminate: bool = True
-    snapshot: bool = False
-    shared: str | None = None
-
-
-class ECSTarget(BaseModel):
-    """Run agent as an ECS Fargate task."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    kind: Literal["ecs"] = "ecs"
-    region: str = "us-east-1"
-    cluster: str = "agentflow"
-    image: str | None = None
-    dockerfile: str | None = None
-    cpu: str = "1024"
-    memory: str = "2048"
-    subnets: list[str] = Field(default_factory=list)
-    security_groups: list[str] = Field(default_factory=list)
-    assign_public_ip: bool = True
-    install_agents: list[str] = Field(default_factory=lambda: ["codex", "claude"])
-    shared: str | None = None
-
-
-TargetSpec = Annotated[
-    LocalTarget | ContainerTarget | SSHTarget | EC2Target | ECSTarget,
-    Field(discriminator="kind"),
-]
+TargetSpec = LocalTarget
 
 
 class OutputContainsCriterion(BaseModel):
@@ -550,12 +391,25 @@ class FileNonEmptyCriterion(BaseModel):
     path: str
 
 
+class NodeOutputContainsSkipCriterion(BaseModel):
+    kind: Literal["node_output_contains"] = "node_output_contains"
+    node_id: str
+    value: str
+    case_sensitive: bool = False
+
+
 SuccessCriterion = Annotated[
     OutputContainsCriterion
     | OutputRegexCriterion
     | FileExistsCriterion
     | FileContainsCriterion
     | FileNonEmptyCriterion,
+    Field(discriminator="kind"),
+]
+
+
+SkipCriterion = Annotated[
+    NodeOutputContainsSkipCriterion,
     Field(discriminator="kind"),
 ]
 
@@ -788,11 +642,12 @@ class NodeSpec(BaseModel):
     capture: CaptureMode = CaptureMode.FINAL
     repo_instructions_mode: RepoInstructionsMode = RepoInstructionsMode.INHERIT
     output_key: str | None = None
-    timeout_seconds: int = Field(default=1800, gt=0)
+    timeout_seconds: int | None = Field(default=1800, gt=0)
     env: dict[str, str] = Field(default_factory=dict)
     executable: str | None = None
     extra_args: list[str] = Field(default_factory=list)
     description: str | None = None
+    skip_if: list[SkipCriterion] = Field(default_factory=list)
     success_criteria: list[SuccessCriterion] = Field(default_factory=list)
     retries: int = Field(default=0, ge=0)
     retry_backoff_seconds: float = Field(default=1.0, ge=0.0)
@@ -1388,13 +1243,7 @@ def _target_disables_inherited_bootstrap(target_payload: dict[str, Any]) -> bool
 
 def _drop_inherited_bootstrap_defaults(local_target_defaults: dict[str, Any]) -> dict[str, Any]:
     inherited = dict(local_target_defaults)
-    bootstrap = _normalize_local_bootstrap(inherited.get("bootstrap"))
-    if bootstrap is None:
-        return inherited
-
     inherited.pop("bootstrap", None)
-    for key in _LOCAL_BOOTSTRAP_TARGET_KEYS:
-        inherited.pop(key, None)
     return inherited
 
 

@@ -1,6 +1,6 @@
 # AgentFlow
 
-Orchestrate codex, claude, and kimi agents in dependency graphs with parallel fanout, iterative cycles, and remote execution on SSH/EC2/ECS.
+Orchestrate codex, claude, pi, and gaia agents locally in dependency graphs with parallel fanout and iterative cycles.
 
 ![AgentFlow Graph](docs/graph.png)
 *94-node pipeline: plan → 64 workers → 8 batch merges → 16 reviews → 4 review merges → synthesis*
@@ -131,31 +131,21 @@ with Graph("mixed") as g:
     )
 ```
 
-For one-off inline provider configs (e.g. a remote LMStudio box), pass a full
+For one-off inline provider configs (e.g. an LMStudio endpoint), pass a full
 `ProviderConfig` via `provider={...}` and AgentFlow materializes a scoped
 `models.json` for the run. See `examples/pi_local_lmstudio.py`.
 
-## Remote Execution
+## Gaia Nodes
 
-Run agents on remote machines -- zero config needed:
-
-```python
-# EC2 (auto-discovers AMI, key pair, VPC)
-codex(task_id="remote", prompt="...", target={"kind": "ec2", "region": "us-east-1"})
-
-# ECS Fargate (auto-discovers VPC, builds agent image)
-codex(task_id="remote", prompt="...", target={"kind": "ecs", "region": "us-east-1"})
-
-# SSH
-codex(task_id="remote", prompt="...", target={"kind": "ssh", "host": "server", "username": "deploy"})
-```
-
-Shared instances across nodes:
+Use `gaia()` when Gaia is installed in the execution environment:
 
 ```python
-plan = codex(task_id="plan", prompt="...", target={"kind": "ec2", "shared": "dev-box"})
-impl = codex(task_id="impl", prompt="...", target={"kind": "ec2", "shared": "dev-box"})
-plan >> impl  # same EC2 instance, files persist
+from agentflow import Graph, codex, gaia
+
+with Graph("gaia-review") as g:
+    scan = gaia(task_id="scan", prompt="Inspect the repo and summarize risks.")
+    final = codex(task_id="final", prompt="Prioritize:\n{{ nodes.scan.output }}")
+    scan >> final
 ```
 
 ## Scratchboard
@@ -205,8 +195,6 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `iterative_impl.py` | Write → review → fix cycle until LGTM |
 | `airflow_like_fuzz_batched.py` | 128-shard fanout with batch merge + periodic monitor |
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
-| `ec2_remote.py` | Run codex on a remote EC2 instance |
-| `ecs_fargate.py` | Run codex on ECS Fargate |
 
 ## Graph Optimization Rounds
 

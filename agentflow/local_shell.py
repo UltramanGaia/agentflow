@@ -33,16 +33,10 @@ _BASH_UNSUPPORTED_LONG_FLAG_DETAILS = {
 _COMMAND_POSITION_PREFIX_TOKENS = {"builtin", "command", "env", "exec", "nohup", "sudo", "time"}
 _ENV_ASSIGNMENT_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _SHELL_CONTROL_TOKENS = {"&&", "||", "|", ";", "do", "then", "elif"}
-_KIMI_SUBSTITUTION_CONSUMERS = {".", "eval", "export", "source"}
 _BASHRC_SOURCE_COMMANDS = {".", "source"}
-_COMMAND_SUBSTITUTION_PATTERN = re.compile(r"(?:\$|<)\(([^()]*)\)")
-_BACKTICK_COMMAND_SUBSTITUTION_PATTERN = re.compile(r"(?<!\\)`([^`]*)`")
 _HOME_REFERENCE_PATTERN = re.compile(r"\$(?:\{HOME\}|HOME)")
 _SHELL_PATH_ENV_REFERENCE_PATTERN = re.compile(
     r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
-)
-_SHELL_VARIABLE_REFERENCE_PATTERN = re.compile(
-    r"^\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[-+?=][^}]*)?\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))$"
 )
 _BASHRC_NONINTERACTIVE_GUARDS = (
     re.compile(r"case\s+\$-\s+in(?s:.*?)\*\)\s*return\s*;;"),
@@ -57,10 +51,8 @@ _AGENTFLOW_BOOTSTRAP_ENV_VARS = (
     "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
-    "KIMI_API_KEY",
-    "KIMI_BASE_URL",
 )
-_AGENTFLOW_BOOTSTRAP_COMMANDS = ("codex", "claude", "kimi")
+_AGENTFLOW_BOOTSTRAP_COMMANDS = ("codex", "claude")
 
 
 class _ShellStartupReadError(RuntimeError):
@@ -147,17 +139,6 @@ def shell_wrapper_requires_command_placeholder(shell: str | None) -> bool:
         if _is_command_flag(part):
             return index + 1 < len(parts)
     return False
-
-
-def shell_init_uses_kimi_helper(shell_init: Any) -> bool:
-    return any(shell_command_uses_kimi_helper(command) for command in shell_init_commands(shell_init))
-
-
-def _looks_like_kimi_token(token: str) -> bool:
-    stripped = _normalize_shell_token(token)
-    if not stripped:
-        return False
-    return os.path.basename(stripped) == "kimi"
 
 
 def _normalize_shell_token(token: str) -> str:
@@ -859,6 +840,11 @@ def _shell_text_defines_function(text: str, function_name: str) -> bool:
     return bool(pattern.search(text))
 
 
+def _shell_text_defines_alias(text: str, alias_name: str) -> bool:
+    pattern = re.compile(rf"(?:^|[;\n])\s*alias\s+{re.escape(alias_name)}=")
+    return bool(pattern.search(text))
+
+
 def _shell_file_defines_function(path: Path, function_name: str) -> bool:
     text = _read_shell_file_text(path)
     if text is None:
@@ -949,7 +935,7 @@ def _shell_file_loads_function(
     if path.name == ".bashrc" and _shell_text_returns_early_for_noninteractive_bash(text):
         return False
 
-    if _shell_text_defines_function(text, function_name):
+    if _shell_text_defines_function(text, function_name) or _shell_text_defines_alias(text, function_name):
         return True
 
     resolved_home = _resolved_home_path(home)
@@ -990,7 +976,7 @@ def _shell_file_exposes_command(
     if path.name == ".bashrc" and _shell_text_returns_early_for_noninteractive_bash(text):
         return False
 
-    if _shell_text_defines_function(text, command_name):
+    if _shell_text_defines_function(text, command_name) or _shell_text_defines_alias(text, command_name):
         return True
 
     resolved_home = _resolved_home_path(home)
@@ -1125,15 +1111,6 @@ def _bash_login_startup_has_direct_agentflow_bootstrap(
         ):
             return True
 
-    if _shell_file_loads_function(
-        normalized_startup,
-        "kimi",
-        home=resolved_home,
-        cwd=cwd,
-        env=env,
-    ):
-        return True
-
     return any(
         _shell_file_exposes_command(
             normalized_startup,
@@ -1167,17 +1144,21 @@ def bash_login_shell_loads_command(
     if not normalized_command_name:
         return False
 
+    explicit_context = home is not None or env is not None or cwd is not None
     resolved_home = _resolved_home_path(home)
     startup_file = _bash_login_startup_file(resolved_home)
     if startup_file is None:
         static_match = False
     else:
-        static_match = _shell_file_exposes_command(
+        shell_env = _shell_command_env_for_target(shell if isinstance(shell, str) else None, "bash", env=env)
+        static_env = dict(env or {})
+        static_env.update(shell_env)
+        static_match = explicit_context and _shell_file_exposes_command(
             startup_file,
             normalized_command_name,
             home=resolved_home,
             cwd=cwd,
-            env=env,
+            env=static_env,
         )
     if static_match:
         return True
@@ -1193,15 +1174,15 @@ def bash_login_shell_loads_command(
         cwd=cwd,
         env=env,
     )
-    shell_env = _shell_command_env_for_target(bash_shell, "bash", env=env)
-    launch_env = os.environ.copy()
-    if isinstance(env, dict):
-        for key, value in env.items():
-            key_text = str(key)
-            if value is None:
-                launch_env.pop(key_text, None)
-                continue
-            launch_env[key_text] = str(value)
+    if not isinstance(env, dict) or "PATH" not in env:
+        return False
+
+    launch_env = {}
+    for key, value in env.items():
+        key_text = str(key)
+        if value is None:
+            continue
+        launch_env[key_text] = str(value)
     launch_env.update(shell_env)
     launch_env["HOME"] = str(effective_home)
 
@@ -1223,32 +1204,6 @@ def bash_login_shell_loads_command(
         return False
 
     return result.returncode == 0
-
-
-def _shell_command_loads_kimi_from_bash_env(
-    command: str | None,
-    *,
-    home: Path | None = None,
-    cwd: Path | str | None = None,
-    env: dict[str, str] | None = None,
-    interactive_bash: bool | None = None,
-) -> bool:
-    bash_env_file = _bash_env_file_for_shell_target(
-        command,
-        home=home,
-        cwd=cwd,
-        env=env,
-        interactive_bash=interactive_bash,
-    )
-    if bash_env_file is None:
-        return False
-    resolved_home, path = bash_env_file
-    text = _read_shell_file_text(path)
-    if text is None:
-        return False
-    if _shell_text_returns_early_for_noninteractive_bash(text):
-        return False
-    return _shell_file_exposes_command(path, "kimi", home=resolved_home, cwd=cwd, env=env)
 
 
 def _shell_command_env_var_value_from_bash_env(
@@ -1662,43 +1617,6 @@ def _shell_command_loads_function_from_sourced_file(
     )
 
 
-def _shell_command_loads_kimi_from_sourced_file_before_kimi(
-    command: str | None,
-    *,
-    home: Path | None = None,
-    cwd: Path | str | None = None,
-    env: dict[str, str] | None = None,
-) -> bool:
-    return _shell_command_loads_function_from_sourced_file_before_target(
-        command,
-        "kimi",
-        "kimi",
-        home=home,
-        cwd=cwd,
-        env=env,
-    )
-
-
-def _shell_template_loads_kimi_from_sourced_file_before_command(
-    shell: str | None,
-    *,
-    home: Path | None = None,
-    cwd: Path | str | None = None,
-    env: dict[str, str] | None = None,
-) -> bool:
-    if not isinstance(shell, str) or "{command}" not in shell:
-        return False
-    placeholder = "__AGENTFLOW_COMMAND_PLACEHOLDER__"
-    return _shell_command_loads_function_from_sourced_file_before_target(
-        shell.replace("{command}", placeholder),
-        "kimi",
-        placeholder,
-        home=home,
-        cwd=cwd,
-        env=env,
-    )
-
-
 def _shell_command_sources_bashrc_before_target(command: str | None, target: str) -> bool:
     if not isinstance(command, str) or not command.strip():
         return False
@@ -1734,10 +1652,6 @@ def _shell_command_sources_bashrc_before_target(command: str | None, target: str
             prefix_allows_options = False
             active_command = None
     return False
-
-
-def shell_command_sources_bashrc_before_kimi(command: str | None) -> bool:
-    return _shell_command_sources_bashrc_before_target(command, "kimi")
 
 
 def shell_command_sources_bashrc(command: str | None) -> bool:
@@ -1776,36 +1690,6 @@ def shell_template_sources_bashrc_before_command(shell: str | None) -> bool:
         return False
     placeholder = "__AGENTFLOW_COMMAND_PLACEHOLDER__"
     return _shell_command_sources_bashrc_before_target(shell.replace("{command}", placeholder), placeholder)
-
-
-def shell_init_sources_bashrc_before_kimi(shell_init: Any) -> bool:
-    sourced_bashrc = False
-    for command in shell_init_commands(shell_init):
-        if shell_command_sources_bashrc_before_kimi(command):
-            return True
-        if shell_command_uses_kimi_helper(command):
-            return sourced_bashrc
-        if shell_command_sources_bashrc(command):
-            sourced_bashrc = True
-    return False
-
-
-def _shell_init_loads_kimi_from_sourced_file_before_kimi(
-    shell_init: Any,
-    *,
-    home: Path | None = None,
-    cwd: Path | str | None = None,
-    env: dict[str, str] | None = None,
-) -> bool:
-    loaded_kimi = False
-    for command in shell_init_commands(shell_init):
-        if _shell_command_loads_kimi_from_sourced_file_before_kimi(command, home=home, cwd=cwd, env=env):
-            return True
-        if shell_command_uses_kimi_helper(command):
-            return loaded_kimi
-        if _shell_command_loads_function_from_sourced_file(command, "kimi", home=home, cwd=cwd, env=env):
-            loaded_kimi = True
-    return False
 
 
 def shell_init_exports_env_var(
@@ -1917,14 +1801,6 @@ def shell_template_exported_env_var_value_before_command(
     return prefixed_value
 
 
-def _explicit_bashrc_kimi_warning(subject: str) -> str:
-    return (
-        f"`{subject}` sources `~/.bashrc` before `kimi`, but `~/.bashrc` returns early for non-interactive "
-        "bash on this host, so helpers defined later still do not load. Add `-i`, set `target.shell_interactive: true`, "
-        "use `bash -lic`, or move the bootstrap into a login-sourced file."
-    )
-
-
 def _explicit_bashrc_shell_init_warning(subject: str) -> str:
     return (
         f"`{subject}` sources `~/.bashrc` before `shell_init`, but `~/.bashrc` returns early for non-interactive "
@@ -1940,32 +1816,6 @@ def bashrc_returns_early_for_noninteractive_shell(home: Path | None = None) -> b
     if text is None:
         return False
     return _shell_text_returns_early_for_noninteractive_bash(text)
-
-
-def _token_uses_kimi_substitution(token: str) -> bool:
-    for body in (*_COMMAND_SUBSTITUTION_PATTERN.findall(token), *_BACKTICK_COMMAND_SUBSTITUTION_PATTERN.findall(token)):
-        if shell_command_uses_kimi_helper(body):
-            return True
-    return False
-
-
-def _token_assigns_kimi_substitution(token: str) -> str | None:
-    normalized = _normalize_shell_expression_token(token)
-    if not _looks_like_env_assignment(normalized):
-        return None
-    name, value = normalized.split("=", 1)
-    if not _token_uses_kimi_substitution(value):
-        return None
-    return name
-
-
-def _token_references_shell_var_from_kimi(token: str, shell_vars_from_kimi: set[str]) -> bool:
-    normalized = _normalize_shell_expression_token(token)
-    match = _SHELL_VARIABLE_REFERENCE_PATTERN.match(normalized)
-    if match is None:
-        return False
-    variable_name = match.group("braced") or match.group("plain")
-    return bool(variable_name and variable_name in shell_vars_from_kimi)
 
 
 def invalid_bash_long_option_error(command: str | None) -> str | None:
@@ -2008,33 +1858,6 @@ def invalid_bash_long_option_error(command: str | None) -> str | None:
             position += 1
         return None
     return None
-
-
-def _is_kimi_probe_argument(tokens: list[str], index: int) -> bool:
-    if index <= 0:
-        return False
-
-    previous = tokens[index - 1]
-    if previous in {"type", "which", "hash"}:
-        return True
-
-    if index > 1 and previous.startswith("-") and tokens[index - 2] in {"type", "which", "hash"}:
-        return True
-
-    if previous in {"-v", "-V"} and index > 1 and tokens[index - 2] == "command":
-        return True
-
-    return False
-
-
-def target_uses_bash(target: Any) -> bool:
-    shell = _target_value(target, "shell")
-    return _target_bash_shell_flags({"shell": shell}).uses_bash
-
-
-def _target_bash_shell_flags(target: Any) -> _BashShellFlags:
-    shell = _target_value(target, "shell")
-    return _bash_shell_flags_for_command(shell if isinstance(shell, str) else None)
 
 
 def _bash_shell_flags_for_command(command: str | None) -> _BashShellFlags:
@@ -2113,6 +1936,15 @@ def _bash_shell_flags_for_command(command: str | None) -> _BashShellFlags:
         return flags
 
     return _BashShellFlags()
+
+
+def _target_bash_shell_flags(target: Any) -> _BashShellFlags:
+    shell = _target_value(target, "shell")
+    return _bash_shell_flags_for_command(shell if isinstance(shell, str) else None)
+
+
+def target_uses_bash(target: Any) -> bool:
+    return _target_bash_shell_flags(target).uses_bash
 
 
 def target_uses_interactive_bash(target: Any) -> bool:
@@ -2420,217 +2252,9 @@ def target_bash_login_startup_warning(
     return None
 
 
-def shell_command_uses_kimi_helper(command: str | None) -> bool:
-    if not isinstance(command, str) or not command.strip():
-        return False
-
-    tokens = _split_shell_parts(command)
-    expects_command = True
-    prefix_allows_options = False
-    active_command: str | None = None
-    pending_shell_assignments_from_kimi: set[str] = set()
-    shell_vars_from_kimi: set[str] = set()
-    for index, token in enumerate(tokens):
-        assigned_var = _token_assigns_kimi_substitution(token)
-        if _is_pure_control_token(token):
-            if expects_command and pending_shell_assignments_from_kimi:
-                shell_vars_from_kimi.update(pending_shell_assignments_from_kimi)
-            expects_command = True
-            prefix_allows_options = False
-            active_command = None
-            pending_shell_assignments_from_kimi.clear()
-            continue
-        if active_command in _KIMI_SUBSTITUTION_CONSUMERS:
-            if _token_uses_kimi_substitution(token):
-                return True
-            if _token_references_shell_var_from_kimi(token, shell_vars_from_kimi):
-                return True
-        if _looks_like_kimi_token(token) and not _is_kimi_probe_argument(tokens, index):
-            if expects_command:
-                return True
-        if index > 0 and _is_command_flag(tokens[index - 1]) and shell_command_uses_kimi_helper(token):
-            return True
-        if expects_command:
-            if token in _COMMAND_POSITION_PREFIX_TOKENS:
-                prefix_allows_options = True
-                continue
-            if _looks_like_env_assignment(token):
-                if assigned_var is not None:
-                    pending_shell_assignments_from_kimi.add(assigned_var)
-                continue
-            if prefix_allows_options and (token == "--" or token.startswith("-")):
-                continue
-            expects_command = False
-            prefix_allows_options = False
-            active_command = os.path.basename(token)
-            pending_shell_assignments_from_kimi.clear()
-        elif active_command in {"export", *_EXPORT_STYLE_COMMANDS} and assigned_var is not None:
-            shell_vars_from_kimi.add(assigned_var)
-        if _token_resets_command_position(token):
-            if expects_command and pending_shell_assignments_from_kimi:
-                shell_vars_from_kimi.update(pending_shell_assignments_from_kimi)
-            expects_command = True
-            prefix_allows_options = False
-            active_command = None
-            pending_shell_assignments_from_kimi.clear()
-    return False
-
-
-def _kimi_bootstrap_without_interactive_bash_warning(source: str) -> str:
-    if source == "target.shell_init":
-        return (
-            "`shell_init: kimi` uses bash without interactive startup; helpers from `~/.bashrc` are usually "
-            "unavailable. Set `target.shell_interactive: true` or use `bash -lic`."
-        )
-    return (
-        "`target.shell` uses `kimi` with bash without interactive startup; helpers from `~/.bashrc` are usually "
-        "unavailable. Add `-i`, set `target.shell_interactive: true`, or use `bash -lic`."
-    )
-
-
-def _kimi_bootstrap_disabled_bash_startup_warning(source: str, flag: str) -> str:
-    if flag == "--noprofile":
-        if source == "target.shell_init":
-            return (
-                "`shell_init: kimi` uses bash with `--noprofile`, so login startup files never reach "
-                "`~/.bashrc`. Remove `--noprofile`, source the helper explicitly, or export provider variables "
-                "directly."
-            )
-        return (
-            "`target.shell` uses `kimi` with bash and `--noprofile`, so login startup files never reach "
-            "`~/.bashrc`. Remove `--noprofile`, source the helper explicitly, or export provider variables "
-            "directly."
-        )
-    if source == "target.shell_init":
-        return (
-            "`shell_init: kimi` uses bash with `--norc`, so interactive startup will not load `~/.bashrc`. "
-            "Remove `--norc`, source the helper explicitly, or export provider variables directly."
-        )
-    return (
-        "`target.shell` uses `kimi` with bash and `--norc`, so interactive startup will not load `~/.bashrc`. "
-        "Remove `--norc`, source the helper explicitly, or export provider variables directly."
-    )
-
-
 def _shell_program(target: Any) -> str | None:
     shell = _target_value(target, "shell")
     shell_parts = _split_shell_parts(shell if isinstance(shell, str) else None)
     if not shell_parts:
         return None
     return os.path.basename(shell_parts[0]) or None
-
-
-def kimi_shell_init_requires_bash_warning(target: Any) -> str | None:
-    if target_uses_bash(target):
-        return None
-
-    target_shell = _shell_program(target) or "this shell"
-    shell_init = _target_value(target, "shell_init")
-    shell = _target_value(target, "shell")
-
-    if shell_init_uses_kimi_helper(shell_init):
-        return (
-            f"`shell_init: kimi` requires bash-style shell bootstrap, but `target.shell` resolves to `{target_shell}`. "
-            "Use `shell: bash` with `target.shell_login: true` and `target.shell_interactive: true`, "
-            "use `bash -lic`, or export provider variables directly."
-        )
-
-    if shell_command_uses_kimi_helper(shell if isinstance(shell, str) else None):
-        return (
-            f"`target.shell` runs `kimi` through `{target_shell}` instead of bash, so shared helpers from bash startup "
-            "files will usually not load. Use `bash -lic`, set `shell: bash` plus login and interactive startup, "
-            "or export provider variables directly."
-        )
-
-    return None
-
-
-def kimi_shell_init_requires_interactive_bash_warning(
-    target: Any,
-    *,
-    home: Path | None = None,
-    cwd: Path | str | None = None,
-    env: dict[str, str] | None = None,
-) -> str | None:
-    if not target_uses_bash(target):
-        return None
-
-    uses_login_bash = target_uses_login_bash(target)
-    uses_interactive_bash = target_uses_interactive_bash(target)
-    login_startup_disabled = uses_login_bash and target_disables_bash_login_startup(target)
-    rc_startup_disabled = uses_interactive_bash and not uses_login_bash and target_disables_bash_rc_startup(target)
-    if uses_interactive_bash and not login_startup_disabled and not rc_startup_disabled:
-        return None
-
-    shell_init = _target_value(target, "shell_init")
-    shell = _target_value(target, "shell")
-    effective_home = _shell_command_effective_home_for_target(
-        shell if isinstance(shell, str) else None,
-        "bash",
-        home=home,
-        cwd=cwd,
-        env=env,
-    )
-    login_shell_loads_kimi = uses_login_bash and not login_startup_disabled and bash_login_shell_loads_command(
-        "kimi",
-        shell=shell if isinstance(shell, str) else None,
-        home=effective_home,
-        cwd=cwd,
-        env=env,
-    )
-    if _shell_command_loads_kimi_from_bash_env(
-        shell if isinstance(shell, str) else None,
-        home=home,
-        cwd=cwd,
-        env=env,
-        interactive_bash=uses_interactive_bash,
-    ):
-        return None
-    guarded_bashrc = bashrc_returns_early_for_noninteractive_shell(effective_home)
-    if shell_init_uses_kimi_helper(shell_init):
-        if login_shell_loads_kimi:
-            return None
-        if _shell_template_loads_kimi_from_sourced_file_before_command(
-            shell if isinstance(shell, str) else None,
-            home=effective_home,
-            cwd=cwd,
-            env=env,
-        ):
-            return None
-        if _shell_init_loads_kimi_from_sourced_file_before_kimi(
-            shell_init,
-            home=effective_home,
-            cwd=cwd,
-            env=env,
-        ):
-            return None
-        if guarded_bashrc:
-            if shell_template_sources_bashrc_before_command(shell if isinstance(shell, str) else None):
-                return _explicit_bashrc_shell_init_warning("target.shell")
-            if shell_init_sources_bashrc_before_kimi(shell_init):
-                return _explicit_bashrc_kimi_warning("shell_init")
-        if login_startup_disabled:
-            return _kimi_bootstrap_disabled_bash_startup_warning("target.shell_init", "--noprofile")
-        if rc_startup_disabled:
-            return _kimi_bootstrap_disabled_bash_startup_warning("target.shell_init", "--norc")
-        return _kimi_bootstrap_without_interactive_bash_warning("target.shell_init")
-
-    if shell_command_uses_kimi_helper(shell if isinstance(shell, str) else None):
-        if login_shell_loads_kimi:
-            return None
-        if _shell_command_loads_kimi_from_sourced_file_before_kimi(
-            shell,
-            home=effective_home,
-            cwd=cwd,
-            env=env,
-        ):
-            return None
-        if guarded_bashrc and shell_command_sources_bashrc_before_kimi(shell):
-            return _explicit_bashrc_kimi_warning("target.shell")
-        if login_startup_disabled:
-            return _kimi_bootstrap_disabled_bash_startup_warning("target.shell", "--noprofile")
-        if rc_startup_disabled:
-            return _kimi_bootstrap_disabled_bash_startup_warning("target.shell", "--norc")
-        return _kimi_bootstrap_without_interactive_bash_warning("target.shell")
-
-    return None

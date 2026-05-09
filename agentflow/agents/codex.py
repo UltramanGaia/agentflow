@@ -105,7 +105,7 @@ class CodexAdapter(AgentAdapter):
         command.append(prompt)
 
         runtime_files: dict[str, str] = {}
-        if provider or node.mcps or repo_instructions_ignored:
+        if provider or node.mcps:
             codex_home = str(Path(paths.target_runtime_dir) / "codex_home")
             runtime_files[self.relative_runtime_file("codex_home", "config.toml")] = self._render_config(
                 node,

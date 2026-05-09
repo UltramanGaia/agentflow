@@ -6,26 +6,16 @@ from pathlib import Path
 from typing import Any
 
 from jinja2 import TemplateError
-
-from agentflow.doctor import build_bash_login_shell_bridge_recommendation
 from agentflow.local_shell import (
     target_bash_login_startup_file_statuses,
-    kimi_shell_init_requires_bash_warning,
-    kimi_shell_init_requires_interactive_bash_warning,
     render_shell_init,
     shell_command_prefix_env_value,
-    shell_command_prefixes_env_var,
-    shell_command_uses_kimi_helper,
     shell_init_exported_env_var_value,
-    shell_init_exports_env_var,
-    shell_init_uses_kimi_helper,
     summarize_target_bash_login_startup,
     target_uses_bash,
     shell_template_exported_env_var_value_before_command,
-    shell_template_exports_env_var_before_command,
     target_bash_home,
     target_bash_login_startup_warning,
-    target_disables_bash_login_startup,
     target_bash_startup_exports_env_var,
     target_uses_interactive_bash,
     target_uses_login_bash,
@@ -33,7 +23,7 @@ from agentflow.local_shell import (
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.prepared import build_execution_paths
-from agentflow.runners.registry import RunnerRegistry, default_runner_registry
+from agentflow.runner import RunnerRegistry, default_runner_registry
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name, resolve_execution_provider
 from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, redact_sensitive_shell_value
@@ -41,7 +31,6 @@ from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, re
 _REDACTED = "<redacted>"
 _GENERATED = "<generated>"
 _INSPECT_PLACEHOLDER_PREFIX = "<inspect placeholder for nodes."
-_KIMI_ANTHROPIC_BASE_URL = "https://api.kimi.com/coding/"
 _OK_LAUNCH_ENV_OVERRIDE_SOURCES = {
     "node.env",
     "provider.env",
@@ -158,16 +147,6 @@ def _payload_summary(node_plan: dict[str, Any]) -> str | None:
     payload = launch.get("payload")
     if not isinstance(payload, dict):
         return None
-    if launch["kind"] == "container":
-        image = payload.get("image")
-        engine = payload.get("engine")
-        if image and engine:
-            return f"{engine} image={image}"
-    if launch["kind"] in ("ec2", "ecs"):
-        function_name = payload.get("function_name")
-        invocation_type = payload.get("invocation_type")
-        if function_name and invocation_type:
-            return f"function={function_name}, invocation={invocation_type}"
     return None
 
 
@@ -219,12 +198,6 @@ def _bootstrap_override_origin(
     return None, ""
 
 
-def _effective_bootstrap_base_url(launch_env: dict[str, str]) -> str:
-    if "ANTHROPIC_BASE_URL" in launch_env:
-        return str(launch_env.get("ANTHROPIC_BASE_URL", "") or "")
-    return str(os.getenv("ANTHROPIC_BASE_URL", "") or "")
-
-
 def _local_launch_env(node: NodeSpec, resolved_provider: object) -> dict[str, str]:
     env: dict[str, str] = {}
     provider_env = getattr(resolved_provider, "env", None)
@@ -257,40 +230,6 @@ def _format_auth_source_summary(
     return summary
 
 
-def _kimi_helper_bootstrap_source(target: object) -> tuple[str, str] | None:
-    def target_value(key: str) -> Any:
-        if isinstance(target, dict):
-            return target.get(key)
-        return getattr(target, key, None)
-
-    if target_value("kind") != "local":
-        return None
-
-    if str(target_value("bootstrap") or "").strip().lower() == "kimi":
-        return ("`target.bootstrap` (`kimi` helper)", "target.bootstrap")
-
-    shell_init = target_value("shell_init")
-    if shell_init_uses_kimi_helper(shell_init):
-        return ("`target.shell_init` (`kimi` helper)", "target.shell_init")
-
-    shell = target_value("shell")
-    if shell_command_uses_kimi_helper(shell if isinstance(shell, str) else None):
-        return ("`target.shell` (`kimi` helper)", "target.shell")
-
-    return None
-
-
-def _helper_bootstrap_is_primary_auth_source(
-    node: NodeSpec,
-    resolved_provider: object,
-    api_key_env: str,
-    helper_bootstrap_source: tuple[str, str] | None,
-) -> bool:
-    if helper_bootstrap_source is None:
-        return False
-    return api_key_env == "ANTHROPIC_API_KEY"
-
-
 def _bash_startup_auth_source_label(target: object) -> tuple[str, str] | None:
     if getattr(target, "kind", None) != "local":
         return None
@@ -319,10 +258,7 @@ def _auth_summary(
 
     target = node.target
     explicit_bootstrap_source: tuple[str, str] | None = None
-    helper_bootstrap_source: tuple[str, str] | None = None
     bash_startup_source: tuple[str, str] | None = None
-    provider_uses_kimi_helper_auth = api_key_env == "ANTHROPIC_API_KEY"
-    helper_bootstrap_is_primary = False
     if getattr(target, "kind", None) == "local":
         effective_home = target_bash_home(target, env=launch_env, cwd=cwd)
         shell_init = getattr(target, "shell_init", None)
@@ -351,16 +287,7 @@ def _auth_summary(
         ):
             explicit_bootstrap_source = ("`target.shell`", "target.shell")
 
-        if provider_uses_kimi_helper_auth or node.agent == AgentKind.CODEX:
-            helper_bootstrap_source = _kimi_helper_bootstrap_source(target)
-            helper_bootstrap_is_primary = _helper_bootstrap_is_primary_auth_source(
-                node,
-                resolved_provider,
-                api_key_env,
-                helper_bootstrap_source,
-            )
-
-        if not helper_bootstrap_is_primary and target_bash_startup_exports_env_var(
+        if target_bash_startup_exports_env_var(
             target,
             api_key_env,
             home=effective_home,
@@ -370,16 +297,12 @@ def _auth_summary(
             bash_startup_source = _bash_startup_auth_source_label(target)
 
     if explicit_bootstrap_source is not None:
-        return _format_auth_source_summary(api_key_env, explicit_bootstrap_source, helper_bootstrap_source)
-
-    if _helper_bootstrap_is_primary_auth_source(node, resolved_provider, api_key_env, helper_bootstrap_source):
-        return _format_auth_source_summary(api_key_env, helper_bootstrap_source)
+        return _format_auth_source_summary(api_key_env, explicit_bootstrap_source)
 
     if _has_nonempty_env_value(node.env, api_key_env):
         return _format_auth_source_summary(
             api_key_env,
             ("`node.env`", "node.env"),
-            helper_bootstrap_source,
         )
 
     provider_env = getattr(resolved_provider, "env", None)
@@ -387,25 +310,16 @@ def _auth_summary(
         return _format_auth_source_summary(
             api_key_env,
             ("`provider.env`", "provider.env"),
-            helper_bootstrap_source,
         )
 
     if str(os.getenv(api_key_env, "")).strip():
-        if provider_uses_kimi_helper_auth and helper_bootstrap_source is not None:
-            return _format_auth_source_summary(api_key_env, helper_bootstrap_source)
         return _format_auth_source_summary(
             api_key_env,
             ("current environment", "current environment"),
-            helper_bootstrap_source,
         )
 
     if bash_startup_source is not None:
-        return _format_auth_source_summary(api_key_env, bash_startup_source, helper_bootstrap_source)
-
-    if helper_bootstrap_source is not None:
-        if node.agent == AgentKind.CODEX:
-            return f"Codex CLI login via {helper_bootstrap_source[0]} or `OPENAI_API_KEY` via current environment"
-        return _format_auth_source_summary(api_key_env, helper_bootstrap_source)
+        return _format_auth_source_summary(api_key_env, bash_startup_source)
 
     if node.agent == AgentKind.CODEX:
         return "Codex CLI login or `OPENAI_API_KEY` via current environment"
@@ -454,12 +368,6 @@ def _local_bootstrap_auth_override_source(
     ) or _has_nonempty_shell_value(shell_command_prefix_env_value(shell if isinstance(shell, str) else None, api_key_env)):
         return {"source": "target.shell"}
 
-    helper_bootstrap_source = None
-    if api_key_env == "ANTHROPIC_API_KEY":
-        helper_bootstrap_source = _kimi_helper_bootstrap_source(target)
-    if _helper_bootstrap_is_primary_auth_source(node, resolved_provider, api_key_env, helper_bootstrap_source):
-        return {"source": helper_bootstrap_source[1], "helper": "kimi"}
-
     return None
 
 
@@ -473,10 +381,6 @@ def _bootstrap_summary(
         return None
 
     parts: list[str] = []
-    bootstrap = target.get("bootstrap")
-    if bootstrap:
-        parts.append(f"preset={bootstrap}")
-
     shell = target.get("shell")
     if shell:
         parts.append(f"shell={redact_sensitive_shell_text(shell)}")
@@ -546,32 +450,6 @@ def _inspection_target_uses_local_shell_bootstrap(node: dict[str, Any]) -> bool:
     return False
 
 
-def inspection_node_auth_depends_on_local_shell_bootstrap(node: dict[str, Any]) -> bool:
-    return auth_summary_depends_on_local_shell_bootstrap(node.get("auth")) and _inspection_target_uses_local_shell_bootstrap(node)
-
-
-def _target_shell_bridge(
-    target: dict[str, Any],
-    launch_env: dict[str, str] | None = None,
-    *,
-    cwd: str | None = None,
-) -> dict[str, str] | None:
-    if target.get("kind") != "local" or not target_uses_login_bash(target):
-        return None
-    if target_disables_bash_login_startup(target):
-        return None
-
-    login_startup_warning = target_bash_login_startup_warning(target, env=launch_env, cwd=cwd)
-    if login_startup_warning is None:
-        return None
-
-    effective_home = target_bash_home(target, env=launch_env, cwd=cwd)
-    recommendation = build_bash_login_shell_bridge_recommendation(home=effective_home, cwd=cwd, env=launch_env)
-    if recommendation is None:
-        return None
-    return recommendation.as_dict()
-
-
 def _target_warnings(
     target: dict[str, Any],
     launch_env: dict[str, str] | None = None,
@@ -580,24 +458,9 @@ def _target_warnings(
 ) -> list[str]:
     warnings: list[str] = []
 
-    effective_home = target_bash_home(target, env=launch_env, cwd=cwd)
-
     login_startup_warning = target_bash_login_startup_warning(target, env=launch_env, cwd=cwd)
     if login_startup_warning is not None:
         warnings.append(login_startup_warning)
-
-    kimi_bash_warning = kimi_shell_init_requires_bash_warning(target)
-    if kimi_bash_warning:
-        warnings.append(kimi_bash_warning)
-
-    kimi_warning = kimi_shell_init_requires_interactive_bash_warning(
-        target,
-        home=effective_home,
-        cwd=cwd,
-        env=launch_env,
-    )
-    if kimi_warning:
-        warnings.append(kimi_warning)
 
     return warnings
 
@@ -636,9 +499,6 @@ def _bootstrap_env_override_source_label(detail: dict[str, Any]) -> str | None:
     source = detail.get("source")
     if not isinstance(source, str) or not source:
         return None
-
-    if detail.get("helper") == "kimi":
-        return f"`{source}` (`kimi` helper)"
 
     if source == "target.bash_startup":
         return "local bash startup files"
@@ -793,27 +653,6 @@ def _bootstrap_env_override_details(
                 cwd=cwd,
             )
             if source is not None:
-                if api_key_env == "ANTHROPIC_API_KEY":
-                    if origin == "launch_env":
-                        effective_base_url = _effective_bootstrap_base_url(launch_env).strip().rstrip("/")
-                        kimi_base_url = _KIMI_ANTHROPIC_BASE_URL.rstrip("/")
-                        if source.get("helper") == "kimi":
-                            if effective_base_url != kimi_base_url:
-                                source = None
-                        elif not effective_base_url:
-                            source = None
-                    else:
-                        base_url_overridden = any(
-                            str(detail.get("key") or "") == "ANTHROPIC_BASE_URL"
-                            for detail in _launch_env_override_details(node, resolved_provider, launch_env)
-                        )
-                        current_base_url = str(os.getenv("ANTHROPIC_BASE_URL", "") or "").strip().rstrip("/")
-                        kimi_base_url = _KIMI_ANTHROPIC_BASE_URL.rstrip("/")
-                        if source.get("helper") == "kimi":
-                            if not base_url_overridden and current_base_url != kimi_base_url:
-                                source = None
-                        elif not base_url_overridden:
-                            source = None
                 if source is not None:
                     detail: dict[str, Any] = {"key": api_key_env}
                     if looks_sensitive_key(api_key_env):
@@ -822,28 +661,6 @@ def _bootstrap_env_override_details(
                         detail["origin"] = origin
                     detail.update(source)
                     details.append(detail)
-
-    helper_source = _kimi_helper_bootstrap_source(node.target)
-    if node.agent == AgentKind.CLAUDE and helper_source is not None:
-        origin = "launch_env"
-        current_base_url = str(launch_env.get("ANTHROPIC_BASE_URL", "") or "")
-        if "ANTHROPIC_BASE_URL" not in launch_env:
-            origin = "current_environment"
-            current_base_url = str(os.getenv("ANTHROPIC_BASE_URL", "") or "")
-        normalized_current = current_base_url.strip().rstrip("/")
-        normalized_kimi = _KIMI_ANTHROPIC_BASE_URL.rstrip("/")
-        if origin == "launch_env" or normalized_current:
-            if normalized_current != normalized_kimi:
-                details.append(
-                    {
-                        "key": "ANTHROPIC_BASE_URL",
-                        "current_value": current_base_url,
-                        "bootstrap_value": _KIMI_ANTHROPIC_BASE_URL,
-                        "origin": origin,
-                        "source": helper_source[1],
-                        "helper": "kimi",
-                    }
-                )
 
     return details
 
@@ -915,7 +732,7 @@ def _local_bootstrap_sets_env_var(
     if target_bash_startup_exports_env_var(target, env_var, home=effective_home, env=env, cwd=cwd):
         return True
 
-    return env_var == "ANTHROPIC_BASE_URL" and _kimi_helper_bootstrap_source(target) is not None
+    return False
 
 
 def _format_launch_env_inheritance_detail(node: NodeSpec, detail: dict[str, Any]) -> str:
@@ -1078,13 +895,6 @@ def build_launch_inspection(
         bash_startup_files = target_bash_login_startup_file_statuses(node.target, env=prepared.env, cwd=prepared.cwd)
         if bash_startup_files:
             node_plan["bash_startup_files"] = bash_startup_files
-        shell_bridge = _target_shell_bridge(
-            node_plan["target"],
-            prepared.env,
-            cwd=prepared.cwd,
-        )
-        if shell_bridge:
-            node_plan["shell_bridge"] = shell_bridge
         launch_env_overrides = _launch_env_override_details(node, resolved_provider, prepared.env)
         if launch_env_overrides:
             node_plan["launch_env_overrides"] = launch_env_overrides
@@ -1244,35 +1054,9 @@ def build_launch_inspection_summary(report: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _render_shell_bridge_lines(shell_bridge: dict[str, Any] | None) -> list[str]:
-    if not isinstance(shell_bridge, dict):
-        return []
-
-    target = str(shell_bridge.get("target", "~/.profile") or "~/.profile")
-    source = str(shell_bridge.get("source", "~/.bashrc") or "~/.bashrc")
-    lines = [f"  Shell bridge suggestion for `{target}` from `{source}`:"]
-
-    reason = str(shell_bridge.get("reason", "") or "").strip()
-    if reason:
-        lines.append(f"  Reason: {reason}")
-
-    snippet = str(shell_bridge.get("snippet", "") or "").rstrip()
-    if snippet:
-        lines.extend(f"  {line}" for line in snippet.splitlines())
-
-    return lines
-
-
 def render_launch_inspection_summary(report: dict[str, Any]) -> str:
     pipeline = report["pipeline"]
     lines = [f"Pipeline: {pipeline['name']}", f"Working dir: {pipeline['working_dir']}"]
-    raw_auto_preflight = pipeline.get("auto_preflight")
-    auto_preflight = _auto_preflight_summary(raw_auto_preflight)
-    if auto_preflight:
-        lines.append(f"Auto preflight: {auto_preflight}")
-    auto_preflight_matches = _auto_preflight_match_summary(raw_auto_preflight)
-    if auto_preflight_matches:
-        lines.append(f"Auto preflight matches: {', '.join(auto_preflight_matches)}")
     for note in report.get("notes", []):
         lines.append(f"Note: {note}")
     lines.append("Nodes:")
@@ -1334,5 +1118,4 @@ def render_launch_inspection_summary(report: dict[str, Any]) -> str:
             lines.append(f"  Warning: {warning}")
         for note in node.get("notes", []):
             lines.append(f"  Note: {note}")
-        lines.extend(_render_shell_bridge_lines(node.get("shell_bridge")))
     return "\n".join(lines)

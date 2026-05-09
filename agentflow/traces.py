@@ -182,82 +182,6 @@ class ClaudeTraceParser(BaseTraceParser):
 
 
 @dataclass(slots=True)
-class KimiTraceParser(BaseTraceParser):
-    def supports_raw_stdout_fallback(self) -> bool:
-        return False
-
-    def _feed_message(self, payload: dict[str, Any]) -> list[NormalizedTraceEvent]:
-        """Handle kimi CLI stream-json Message format (role/content)."""
-        role = payload.get("role", "")
-        events: list[NormalizedTraceEvent] = []
-        if role == "assistant":
-            content = payload.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        part_type = part.get("type", "text")
-                        text = _stringify(part)
-                        if part_type == "text" and text:
-                            self.remember(text)
-                        events.append(self.emit(part_type, f"{part_type.title()} part", text, payload))
-            elif isinstance(content, str) and content:
-                self.remember(content)
-                events.append(self.emit("text", "Text part", content, payload))
-            tool_calls = payload.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                    name = fn.get("name", "tool")
-                    events.append(self.emit("toolcall", f"ToolCall: {name}", _stringify(fn.get("arguments")), payload))
-        elif role == "tool":
-            text = _stringify(payload.get("content"))
-            events.append(self.emit("toolresult", "ToolResult", text, payload))
-        else:
-            text = _stringify(payload)
-            if text:
-                self.remember(text)
-            events.append(self.emit("event", str(role or "kimi"), text, payload))
-        return events
-
-    def feed(self, line: str) -> list[NormalizedTraceEvent]:
-        payload = _json(line)
-        if payload is None:
-            text = line.rstrip()
-            self.remember(text)
-            return [self.emit("stdout", "stdout", text, line)] if text else []
-
-        # kimi CLI stream-json outputs Message objects with a "role" field
-        if "role" in payload:
-            return self._feed_message(payload)
-
-        # Legacy Wire protocol format (type/payload envelope, optionally wrapped in JSON-RPC 2.0)
-        event_type = payload.get("type")
-        inner = payload
-        if payload.get("jsonrpc") == "2.0":
-            event_type = payload.get("params", {}).get("type") or payload.get("method") or event_type
-            inner = payload.get("params", {})
-        payload_data = inner.get("payload") if isinstance(inner, dict) else None
-        if payload_data is None and isinstance(inner, dict):
-            payload_data = inner.get("result") or inner
-        text = _stringify(payload_data)
-        events: list[NormalizedTraceEvent] = []
-
-        if event_type == "ContentPart":
-            part_type = (payload_data or {}).get("type", "content")
-            if part_type == "text":
-                self.remember(_stringify(payload_data))
-            events.append(self.emit(part_type, f"{part_type.title()} part", _stringify(payload_data), payload))
-        elif event_type in {"ToolCall", "ToolResult", "StepBegin", "TurnBegin", "TurnEnd", "ApprovalRequest", "QuestionRequest", "MCPLoadingBegin", "MCPLoadingEnd"}:
-            title = event_type.replace("_", " ")
-            events.append(self.emit(event_type.lower(), title, text, payload))
-        else:
-            if text:
-                self.remember(text)
-            events.append(self.emit("event", str(event_type or "kimi"), text, payload))
-        return events
-
-
-@dataclass(slots=True)
 class PiTraceParser(BaseTraceParser):
     """Parser for Pi CLI's ``--mode json`` event stream.
 
@@ -344,6 +268,49 @@ class PiTraceParser(BaseTraceParser):
 
 
 @dataclass(slots=True)
+class GaiaTraceParser(BaseTraceParser):
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        payload = _json(line)
+        if payload is None:
+            text = line.rstrip()
+            self.remember(text)
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+
+        event_type = str(
+            payload.get("type")
+            or payload.get("event")
+            or payload.get("role")
+            or "gaia"
+        )
+        text = _stringify(
+            payload.get("message")
+            or payload.get("result")
+            or payload.get("output")
+            or payload.get("delta")
+            or payload.get("content")
+            or payload.get("text")
+            or payload
+        )
+        events: list[NormalizedTraceEvent] = []
+
+        if event_type in {"assistant", "message", "assistant_message"}:
+            self.remember(text)
+            events.append(self.emit("assistant_message", "Assistant message", text, payload))
+        elif event_type in {"result", "final", "completed", "done"}:
+            if text and text != self.last_message:
+                self.remember(text)
+            events.append(self.emit("result", "Result", text, payload))
+        elif event_type in {"tool_use", "tool_call", "tool_result"}:
+            title = event_type.replace("_", " ").title()
+            events.append(self.emit(event_type, title, text, payload))
+        else:
+            if text:
+                self.remember(text)
+            events.append(self.emit("event", event_type, text, payload))
+        return events
+
+
+@dataclass(slots=True)
 class GenericTraceParser(BaseTraceParser):
     def feed(self, line: str) -> list[NormalizedTraceEvent]:
         text = line.rstrip()
@@ -357,8 +324,8 @@ def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
             return CodexTraceParser(node_id=node_id, agent=agent)
         case AgentKind.CLAUDE:
             return ClaudeTraceParser(node_id=node_id, agent=agent)
-        case AgentKind.KIMI:
-            return KimiTraceParser(node_id=node_id, agent=agent)
         case AgentKind.PI:
             return PiTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.GAIA:
+            return GaiaTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)

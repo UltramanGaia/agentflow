@@ -3,14 +3,74 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
-from pathlib import Path
+from abc import ABC, abstractmethod
 from contextlib import suppress
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Awaitable, Callable
+
+from pydantic import BaseModel, Field
 
 from agentflow.local_shell import render_shell_init, shell_wrapper_requires_command_placeholder, target_uses_interactive_bash
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.runners.base import LaunchPlan, RawExecutionResult, Runner, StreamCallback
 from agentflow.specs import LocalTarget, NodeSpec
 from agentflow.utils import ensure_dir
+
+
+class RawExecutionResult(BaseModel):
+    exit_code: int
+    stdout_lines: list[str] = Field(default_factory=list)
+    stderr_lines: list[str] = Field(default_factory=list)
+    timed_out: bool = False
+    cancelled: bool = False
+
+
+StreamCallback = Callable[[str, str], Awaitable[None]]
+CancelCallback = Callable[[], bool]
+
+
+@dataclass(slots=True)
+class LaunchPlan:
+    kind: str = "process"
+    command: list[str] | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    cwd: str | None = None
+    stdin: str | None = None
+    runtime_files: list[str] = field(default_factory=list)
+    payload: dict[str, object] | None = None
+
+
+class Runner(ABC):
+    def plan_execution(
+        self,
+        node: NodeSpec,
+        prepared: PreparedExecution,
+        paths: ExecutionPaths,
+    ) -> LaunchPlan:
+        return LaunchPlan(
+            command=list(prepared.command),
+            env=dict(prepared.env),
+            cwd=prepared.cwd,
+            stdin=prepared.stdin,
+            runtime_files=sorted(prepared.runtime_files),
+        )
+
+    @abstractmethod
+    async def execute(
+        self,
+        node: NodeSpec,
+        prepared: PreparedExecution,
+        paths: ExecutionPaths,
+        on_output: StreamCallback,
+        should_cancel: CancelCallback,
+    ) -> RawExecutionResult:
+        raise NotImplementedError
+
+    def materialize_runtime_files(self, base_dir: Path, runtime_files: dict[str, str]) -> None:
+        for relative_path, content in runtime_files.items():
+            target = base_dir / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
 
 class LocalRunner(Runner):
@@ -265,7 +325,7 @@ class LocalRunner(Runner):
         prepared: PreparedExecution,
         paths: ExecutionPaths,
         on_output: StreamCallback,
-        should_cancel,
+        should_cancel: CancelCallback,
     ) -> RawExecutionResult:
         self.materialize_runtime_files(paths.host_runtime_dir, prepared.runtime_files)
         ensure_dir(Path(prepared.cwd))
@@ -301,11 +361,6 @@ class LocalRunner(Runner):
         timeout = node.timeout_seconds if node.timeout_seconds and node.timeout_seconds > 0 else None
         deadline = asyncio.get_running_loop().time() + timeout if timeout else None
 
-        # Monitor process exit, streams, timeout, and cancellation concurrently.
-        # Key insight: claude spawns child processes (MCP servers, plugins) that
-        # inherit stdout/stderr pipes. When claude exits, those children keep the
-        # pipes open — so we CANNOT rely on stream EOF to detect completion.
-        # Instead, we treat process exit (wait_task) as the primary signal.
         try:
             while True:
                 remaining = deadline - asyncio.get_running_loop().time() if deadline else None
@@ -322,11 +377,8 @@ class LocalRunner(Runner):
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if wait_task in done:
-                    # Process exited — this is our primary completion signal.
-                    # Don't wait for streams; child processes may hold pipes open.
                     break
                 if stdout_task in done and stderr_task in done:
-                    # Both streams EOF'd — process should follow shortly
                     if not wait_task.done():
                         try:
                             await asyncio.wait_for(wait_task, timeout=5)
@@ -336,15 +388,13 @@ class LocalRunner(Runner):
         except Exception:
             timed_out = True
 
-        # Drain streams with a hard 3s timeout — child processes may hold pipes
-        async def _drain_streams():
+        async def _drain_streams() -> None:
             try:
                 await asyncio.wait_for(
                     asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
                     timeout=3,
                 )
             except asyncio.TimeoutError:
-                # Cancel stuck stream tasks
                 for task in (stdout_task, stderr_task):
                     if not task.done():
                         task.cancel()
@@ -379,3 +429,31 @@ class LocalRunner(Runner):
             timed_out=timed_out,
             cancelled=cancelled,
         )
+
+
+class RunnerRegistry:
+    def __init__(self) -> None:
+        self._registry: dict[str, Runner] = {
+            "local": LocalRunner(),
+        }
+
+    def register(self, kind: str, runner: Runner) -> None:
+        self._registry[kind] = runner
+
+    def get(self, kind: str) -> Runner:
+        return self._registry[kind]
+
+
+default_runner_registry = RunnerRegistry()
+
+
+__all__ = [
+    "CancelCallback",
+    "LaunchPlan",
+    "LocalRunner",
+    "RawExecutionResult",
+    "Runner",
+    "RunnerRegistry",
+    "StreamCallback",
+    "default_runner_registry",
+]

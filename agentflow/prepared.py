@@ -51,23 +51,9 @@ def build_execution_paths(
         host_runtime_dir = ensure_dir(host_runtime_dir)
 
     app_root = Path(__file__).resolve().parents[1]
-    if node_target.kind == "container":
-        host_workdir = pipeline_workdir
-        target_workdir = node_target.workdir_mount
-        target_runtime_dir = node_target.runtime_mount
-    elif node_target.kind == "ssh":
-        host_workdir = pipeline_workdir
-        remote_wd = node_target.remote_workdir or str(pipeline_workdir)
-        target_workdir = remote_wd
-        target_runtime_dir = f"{remote_wd.rstrip('/')}/.agentflow-runtime/{node_id}"
-    elif node_target.kind in ("ec2", "ecs"):
-        host_workdir = pipeline_workdir
-        target_workdir = "/tmp/workspace"
-        target_runtime_dir = f"/tmp/workspace/.agentflow-runtime/{node_id}"
-    else:
-        host_workdir = resolve_local_workdir(pipeline_workdir, node_target.cwd)
-        target_workdir = str(host_workdir)
-        target_runtime_dir = str(host_runtime_dir)
+    host_workdir = resolve_local_workdir(pipeline_workdir, node_target.cwd)
+    target_workdir = str(host_workdir)
+    target_runtime_dir = str(host_runtime_dir)
 
     return ExecutionPaths(
         host_workdir=host_workdir,

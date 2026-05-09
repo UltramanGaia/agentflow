@@ -1,4 +1,4 @@
-from agentflow import Graph, claude, codex, kimi
+from agentflow import Graph, claude, codex
 
 
 with Graph("airflow-like-example", working_dir=".", concurrency=3) as dag:
@@ -14,11 +14,11 @@ with Graph("airflow-like-example", working_dir=".", concurrency=3) as dag:
         model="claude-sonnet-4-5",
         tools="read_write",
     )
-    review = kimi(
+    review = codex(
         task_id="review",
         prompt="Review the plan and call out risks:\n\n{{ nodes.plan.output }}",
-        model="kimi-k2-turbo-preview",
         capture="trace",
+        tools="read_only",
     )
     merge = codex(
         task_id="merge",

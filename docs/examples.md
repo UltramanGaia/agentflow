@@ -4,11 +4,8 @@
 
 | Template | Use it when | Key features |
 | --- | --- | --- |
-| `pipeline` | You want the smallest generic starter. | Codex plan, Claude implementation, Kimi review, final Codex merge. |
+| `pipeline` | You want the smallest generic starter. | Codex plan, Claude implementation, Codex review, final Codex merge. |
 | `codex-repo-sweep-batched` | You want a large repo audit that still produces a readable handoff. | `fanout`, `merge`, `node_defaults`, `agent_defaults`, staged reducers. |
-| `local-kimi-smoke` | You want the shortest real-agent local smoke path. | `bootstrap: kimi`. |
-| `local-kimi-shell-init-smoke` | You want the explicit shell-init equivalent. | `shell: bash`, login shell flags, `shell_init: kimi`. |
-| `local-kimi-shell-wrapper-smoke` | You want the bootstrap expressed as an explicit wrapper. | `target.shell` with `{command}` injection. |
 
 ## Python Examples
 

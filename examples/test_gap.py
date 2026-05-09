@@ -27,7 +27,7 @@ with Graph("test-gap-analysis", working_dir=".", concurrency=6) as dag:
             {"module": "agentflow/orchestrator.py"},
             {"module": "agentflow/specs.py"},
             {"module": "agentflow/context.py"},
-            {"module": "agentflow/runners/local.py"},
+            {"module": "agentflow/runner.py"},
         ],
     )
 

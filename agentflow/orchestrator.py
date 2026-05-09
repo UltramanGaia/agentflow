@@ -37,8 +37,8 @@ from agentflow.graph_optimizer import (
     write_validation_result,
 )
 from agentflow.loader import load_pipeline_from_path
-from agentflow.prepared import ExecutionPaths, PreparedExecution, build_execution_paths
-from agentflow.runners.registry import RunnerRegistry, default_runner_registry
+from agentflow.prepared import ExecutionPaths, build_execution_paths
+from agentflow.runner import RunnerRegistry, default_runner_registry
 from agentflow.specs import (
     NodeAttempt,
     NodeResult,
@@ -114,19 +114,6 @@ class Orchestrator:
 
     def __post_init__(self) -> None:
         self._run_slots = threading.Semaphore(self.max_concurrent_runs)
-        self._inject_shared_resource_manager()
-
-    def _inject_shared_resource_manager(self) -> None:
-        """Give EC2 and ECS runners a shared resource manager."""
-        from agentflow.cloud.shared import SharedResourceManager
-
-        manager = SharedResourceManager()
-        for kind in ("ec2", "ecs"):
-            try:
-                runner = self.runners.get(kind)
-                runner._shared_manager = manager
-            except KeyError:
-                pass
 
     @staticmethod
     def _reset_node_for_cycle(record: "RunRecord", node_id: str, remaining: set[str]) -> None:
@@ -163,26 +150,25 @@ class Orchestrator:
                     queue.append(downstream)
         return [nid for nid in visited if nid != start_id]
 
-    def _register_shared_resources(self, pipeline: "PipelineSpec") -> None:
-        """Scan nodes for shared targets and pre-register expected ref counts."""
-        from collections import Counter
+    @staticmethod
+    def _node_output_text(node_result: NodeResult | None) -> str:
+        if node_result is None:
+            return ""
+        return str(node_result.output or node_result.final_response or "")
 
-        shared_counts: Counter[str] = Counter()
-        for node in pipeline.nodes:
-            shared_id = getattr(node.target, "shared", None)
-            if shared_id:
-                shared_counts[shared_id] += 1
-
-        if shared_counts:
-            for kind in ("ec2", "ecs"):
-                try:
-                    runner = self.runners.get(kind)
-                    mgr = getattr(runner, "_shared_manager", None)
-                    if mgr:
-                        for sid, count in shared_counts.items():
-                            mgr.register_expected(sid, count)
-                except KeyError:
-                    pass
+    @classmethod
+    def _should_skip_node(cls, node: "NodeSpec", record: RunRecord) -> tuple[bool, str | None]:
+        for criterion in node.skip_if:
+            if criterion.kind == "node_output_contains":
+                source = record.nodes.get(criterion.node_id)
+                haystack = cls._node_output_text(source)
+                needle = str(criterion.value)
+                if not criterion.case_sensitive:
+                    haystack = haystack.lower()
+                    needle = needle.lower()
+                if needle and needle in haystack:
+                    return True, f"{criterion.kind}:{criterion.node_id}:{criterion.value}"
+        return False, None
 
     def _initialize_run_tracking(self, run_id: str, *, cancel_flag: threading.Event | None = None) -> None:
         self._cancel_flags[run_id] = cancel_flag or threading.Event()
@@ -952,10 +938,7 @@ class Orchestrator:
         scratchboard = self._scratchboards.get(run_id)
         if scratchboard is not None:
             from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX
-            if execution_node.target.kind == "local":
-                sb_path = str(scratchboard.path)
-            else:
-                sb_path = f"{paths.target_runtime_dir}/{SCRATCHBOARD_FILENAME}"
+            sb_path = str(scratchboard.path)
             prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
         adapter = self.adapters.get(runtime_agent)
         runner = self.runners.get(execution_node.target.kind)
@@ -975,26 +958,6 @@ class Orchestrator:
             result.attempts.append(attempt)
             parser.start_attempt(attempt_number)
             prepared = adapter.prepare(execution_node, prompt, paths)
-            # Forward local credentials to remote targets when enabled
-            # EC2/ECS: always forward (ephemeral, no pre-existing config)
-            # SSH: only if forward_credentials=True (remote has its own identity)
-            should_forward = (
-                execution_node.target.kind in ("ec2", "ecs")
-                or (execution_node.target.kind == "ssh" and getattr(execution_node.target, "forward_credentials", False))
-            )
-            if should_forward:
-                from agentflow.cloud.aws import collect_local_credentials
-                local_creds = collect_local_credentials(runtime_agent.value)
-                merged = {**local_creds, **prepared.env}
-                prepared = PreparedExecution(
-                    command=prepared.command, env=merged, cwd=prepared.cwd,
-                    trace_kind=prepared.trace_kind, runtime_files=prepared.runtime_files,
-                    stdin=prepared.stdin,
-                )
-            # Inject scratchboard file into runtime_files for remote targets
-            if scratchboard is not None and execution_node.target.kind not in ("local",):
-                from agentflow.scratchboard import SCRATCHBOARD_FILENAME
-                prepared.runtime_files[SCRATCHBOARD_FILENAME] = scratchboard.read()
             plan = runner.plan_execution(execution_node, prepared, paths)
             await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
             await self.store.append_artifact_text(
@@ -1147,18 +1110,15 @@ class Orchestrator:
                     content = stripped.removeprefix("SCRATCHBOARD:").strip()
                     await scratchboard.append(node_id, content)
 
-        # Capture diff from worktree (local) or remote (SSH/EC2/ECS)
+        # Capture diff from local worktree.
         if pipeline.use_worktree:
             diff = ""
             if worktree_dir is not None:
-                # Local: diff from worktree
                 from agentflow.worktree import get_worktree_diff, remove_worktree
                 try:
                     diff = get_worktree_diff(worktree_dir)
                 except Exception:
                     pass
-            # For remote nodes (SSH/EC2/ECS), diff is captured from the node output
-            # if the node prompt asks for `git diff`. No automatic remote diff capture.
             if diff:
                 await self.store.write_artifact_text(run_id, node_id, "diff.patch", diff)
             result.diff = diff
@@ -1209,8 +1169,6 @@ class Orchestrator:
             sb_path = self.store.base_dir / run_id / SCRATCHBOARD_FILENAME
             self._scratchboards[run_id] = Scratchboard(sb_path)
 
-        # Pre-register shared resource counts so instances survive between sequential nodes
-        self._register_shared_resources(pipeline)
         # Exclude nodes already in a terminal state (e.g. completed from a resumed run)
         remaining = {
             node_id for node_id in node_map
@@ -1298,9 +1256,17 @@ class Orchestrator:
             blocked = [
                 node_id
                 for node_id in list(remaining)
-                if node_id not in cycle_nodes  # don't skip any node in a cycle
-                and node_id not in cycle_downstream  # don't skip nodes waiting on cycle outcome
-                and any(record.nodes[dependency].status in {NodeStatus.FAILED, NodeStatus.SKIPPED, NodeStatus.CANCELLED} for dependency in node_map[node_id].depends_on)
+                if (
+                    # Skipped/cancelled upstreams are terminal blockers even
+                    # inside retry cycles; only FAILED is allowed to flow
+                    # through cycle edges for another iteration.
+                    any(record.nodes[dependency].status in {NodeStatus.SKIPPED, NodeStatus.CANCELLED} for dependency in node_map[node_id].depends_on)
+                    or (
+                        node_id not in cycle_nodes  # don't skip cycle nodes only because an upstream failed
+                        and node_id not in cycle_downstream  # don't skip nodes waiting on cycle outcome
+                        and any(record.nodes[dependency].status == NodeStatus.FAILED for dependency in node_map[node_id].depends_on)
+                    )
+                )
             ]
             for node_id in blocked:
                 record.nodes[node_id].status = NodeStatus.SKIPPED
@@ -1334,6 +1300,14 @@ class Orchestrator:
                     if not all(record.nodes[dep].status in terminal for dep in node.depends_on):
                         continue
                 elif not all(record.nodes[dep].status == NodeStatus.COMPLETED for dep in node.depends_on):
+                    continue
+                skip_node, skip_reason = self._should_skip_node(node, record)
+                if skip_node:
+                    record.nodes[node_id].status = NodeStatus.SKIPPED
+                    record.nodes[node_id].finished_at = utcnow_iso()
+                    remaining.remove(node_id)
+                    await self._publish(run_id, "node_skipped", node_id=node_id, reason=skip_reason or "skip_if")
+                    await self.store.persist_run(run_id)
                     continue
                 if node.schedule is None:
                     ready.append(node_id)

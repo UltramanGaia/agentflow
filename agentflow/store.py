@@ -10,11 +10,14 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from agentflow.specs import RunEvent, RunRecord
+from agentflow.specs import RunEvent, RunRecord, RunStatus
 from agentflow.utils import ensure_dir
 
 # Set up a dedicated logger for sync issues
 sync_logger = logging.getLogger("agentflow.sync")
+
+
+_TERMINAL_RUN_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
 
 
 class RunStore:
@@ -41,6 +44,14 @@ class RunStore:
                             continue
 
                         run = RunRecord.model_validate_json(content)
+                        existing = self._runs.get(run_id)
+                        if (
+                            existing is not None
+                            and existing.status not in _TERMINAL_RUN_STATUSES
+                            and run.status not in _TERMINAL_RUN_STATUSES
+                        ):
+                            self._mtimes[run_id] = mtime
+                            continue
                         # Only update if status changed or it's new
                         if run_id not in self._runs or self._runs[run_id].status != run.status:
                             sync_logger.debug(f"Syncing run {run_id}: status {run.status}")
