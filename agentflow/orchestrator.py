@@ -1269,10 +1269,17 @@ class Orchestrator:
                 )
             ]
             for node_id in blocked:
+                node = node_map[node_id]
+                skip_node, skip_reason = self._should_skip_node(node, record)
                 record.nodes[node_id].status = NodeStatus.SKIPPED
                 record.nodes[node_id].finished_at = utcnow_iso()
                 remaining.remove(node_id)
-                await self._publish(run_id, "node_skipped", node_id=node_id, reason="upstream_failure")
+                await self._publish(
+                    run_id,
+                    "node_skipped",
+                    node_id=node_id,
+                    reason=skip_reason if skip_node else "upstream_failure",
+                )
             for node_id in list(remaining):
                 node = node_map[node_id]
                 if node.schedule is None:
