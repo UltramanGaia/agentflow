@@ -17,9 +17,9 @@ def test_resolve_provider_rejects_wrong_builtin_alias() -> None:
 
 
 def test_local_target_bootstrap_remains_unsupported() -> None:
-    with pytest.raises(ValidationError, match="`target.bootstrap` is no longer supported"):
-        LocalTarget(bootstrap="codex")
+    with pytest.raises(ValidationError):
+        LocalTarget.model_validate({"bootstrap": "codex"})
 
 
-def test_local_target_blank_bootstrap_is_ignored() -> None:
-    assert LocalTarget(bootstrap=" ").bootstrap is None
+def test_local_target_bootstrap_field_is_removed() -> None:
+    assert "bootstrap" not in LocalTarget.model_fields

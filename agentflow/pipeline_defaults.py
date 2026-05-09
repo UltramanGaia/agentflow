@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agentflow.fanout import expand_compact_nodes
-from agentflow.specs_core import AgentKind, LocalTarget, _normalize_local_bootstrap, builtin_agent_kind
+from agentflow.specs_core import AgentKind, LocalTarget, builtin_agent_kind
 
 
 _NODE_DEFAULT_FORBIDDEN_FIELDS = {
@@ -152,19 +152,6 @@ def apply_node_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         resolved["agent_defaults"] = {agent.value: defaults for agent, defaults in agent_defaults.items()}
     return resolved
 
-
-def _target_disables_inherited_bootstrap(target_payload: dict[str, Any]) -> bool:
-    if "bootstrap" not in target_payload:
-        return False
-    return _normalize_local_bootstrap(target_payload.get("bootstrap")) is None
-
-
-def _drop_inherited_bootstrap_defaults(local_target_defaults: dict[str, Any]) -> dict[str, Any]:
-    inherited = dict(local_target_defaults)
-    inherited.pop("bootstrap", None)
-    return inherited
-
-
 def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     resolved = dict(payload)
     local_target_defaults = _local_target_defaults_payload(resolved.get("local_target_defaults"))
@@ -202,11 +189,7 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
             merged_nodes.append(updated_node)
             continue
 
-        merged_target = (
-            _drop_inherited_bootstrap_defaults(local_target_defaults)
-            if _target_disables_inherited_bootstrap(target_payload)
-            else dict(local_target_defaults)
-        )
+        merged_target = dict(local_target_defaults)
         merged_target.update(target_payload)
         updated_node["target"] = merged_target
         merged_nodes.append(updated_node)

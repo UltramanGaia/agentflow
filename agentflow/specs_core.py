@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import re
-import shlex
 try:
     from enum import StrEnum
 except ImportError:  # pragma: no cover - Python < 3.11
@@ -10,7 +8,6 @@ except ImportError:  # pragma: no cover - Python < 3.11
 
     class StrEnum(str, Enum):
         pass
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -108,51 +105,12 @@ _FANOUT_TEMPLATE_PATTERN = re.compile(r"{{\s*(?P<expr>[A-Za-z_][A-Za-z0-9_]*(?:\
 _FANOUT_EXPANSION_MODE_KEYS = ("count", "values", "matrix", "group_by", "batches")
 
 
-def _normalize_local_bootstrap(value: object) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    return normalized or None
-
-
-def _shell_program(shell: str | None) -> str | None:
-    if not isinstance(shell, str) or not shell.strip():
-        return None
-    try:
-        parts = shlex.split(shell)
-    except ValueError:
-        return None
-    if not parts:
-        return None
-    return os.path.basename(parts[0]) or None
-
-
-def _coerce_base_dir(value: object) -> Path | None:
-    if isinstance(value, Path):
-        return value.expanduser().resolve()
-    if isinstance(value, str) and value.strip():
-        return Path(value).expanduser().resolve()
-    return None
-
-
 class LocalTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["local"] = "local"
     cwd: str | None = None
-    bootstrap: str | None = None
-    shell: str | None = None
-    shell_login: bool = False
-    shell_interactive: bool = False
     shell_init: str | list[str] | None = None
-
-    @field_validator("bootstrap")
-    @classmethod
-    def validate_bootstrap(cls, value: str | None) -> str | None:
-        normalized = _normalize_local_bootstrap(value)
-        if normalized is None:
-            return None
-        raise ValueError("`target.bootstrap` is no longer supported")
 
     @field_validator("shell_init")
     @classmethod
@@ -171,20 +129,6 @@ class LocalTarget(BaseModel):
         if len(normalized_commands) != len(value):
             raise ValueError("`target.shell_init` list entries must be non-empty strings")
         return normalized_commands
-
-    @model_validator(mode="after")
-    def validate_shell_options_have_shell(self) -> "LocalTarget":
-        unsupported_fields: list[str] = []
-        if self.shell and self.shell.strip():
-            unsupported_fields.append("shell")
-        if self.shell_login:
-            unsupported_fields.append("shell_login")
-        if self.shell_interactive:
-            unsupported_fields.append("shell_interactive")
-        if unsupported_fields:
-            joined = ", ".join(f"`target.{field}`" for field in unsupported_fields)
-            raise ValueError(f"{joined} are no longer supported on local targets")
-        return self
 
 
 TargetSpec = LocalTarget

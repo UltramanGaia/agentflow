@@ -34,7 +34,6 @@ def test_pipeline_spec_validation_does_not_implicitly_transform_payloads() -> No
     node = pipeline.nodes[0]
 
     assert node.target.cwd is None
-    assert node.target.shell is None
     assert node.target.shell_init is None
 
 
