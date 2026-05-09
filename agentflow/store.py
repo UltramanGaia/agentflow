@@ -22,10 +22,18 @@ _TERMINAL_RUN_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCE
 
 
 class RunStore:
+    """In-memory run registry with filesystem persistence.
+
+    The in-memory ``_runs`` map is the source of truth while this process is
+    active. ``run.json`` and ``events.jsonl`` are loaded during initialization
+    and written after mutations; reads do not rescan the filesystem.
+    """
+
     def __init__(self, base_dir: str | Path = ".agentflow/runs") -> None:
         self.base_dir = ensure_dir(Path(base_dir).expanduser())
         self._runs: dict[str, RunRecord] = {}
         self._locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._registry_lock = threading.RLock()
         self._subscribers: defaultdict[str, set[queue.Queue[RunEvent]]] = defaultdict(set)
         self._events_cache: defaultdict[str, list[RunEvent]] = defaultdict(list)
         self._mtimes: dict[str, float] = {}
@@ -57,8 +65,9 @@ class RunStore:
                         if run_id not in self._runs or self._runs[run_id].status != run.status:
                             sync_logger.debug(f"Syncing run {run_id}: status {run.status}")
 
-                        self._runs[run_id] = run
-                        self._mtimes[run_id] = mtime
+                        with self._registry_lock:
+                            self._runs[run_id] = run
+                            self._mtimes[run_id] = mtime
 
                         # Sync events
                         events_path = run_file.parent / "events.jsonl"
@@ -70,8 +79,9 @@ class RunStore:
                                     for line in events_path.read_text(encoding="utf-8").splitlines()
                                     if line.strip()
                                 ]
-                                self._events_cache[run_id] = events
-                                self._mtimes[f"{run_id}_events"] = event_mtime
+                                with self._registry_lock:
+                                    self._events_cache[run_id] = events
+                                    self._mtimes[f"{run_id}_events"] = event_mtime
                 except (OSError, ValidationError, json.JSONDecodeError, KeyError) as e:
                     sync_logger.error(f"Failed to sync {run_id}: {e}")
                     continue
@@ -82,7 +92,8 @@ class RunStore:
     async def create_run(self, record: RunRecord | None = None) -> RunRecord:
         if record is None:
             raise ValueError("create_run requires a RunRecord")
-        self._runs[record.id] = record
+        with self._registry_lock:
+            self._runs[record.id] = record
         await self.persist_run(record.id)
         return record
 
@@ -105,31 +116,21 @@ class RunStore:
         await asyncio.to_thread(self._persist_run_sync, run_id)
 
     def _persist_run_sync(self, run_id: str) -> None:
-        record = self._runs[run_id]
-        path = self.run_dir(run_id) / "run.json"
-
-        # Check if disk is newer before overwriting
-        if path.exists():
-            try:
-                disk_mtime = path.stat().st_mtime
-                if self._mtimes.get(run_id, 0) < disk_mtime:
-                    # Disk is newer, reload first to avoid overwriting clinical updates (like failed status)
-                    disk_content = path.read_text(encoding="utf-8")
-                    disk_record = RunRecord.model_validate_json(disk_content)
-                    if disk_record.status in ("failed", "cancelled", "completed"):
-                        # Don't overwrite terminal status
-                        self._runs[run_id] = disk_record
-                        self._mtimes[run_id] = disk_mtime
-                        return
-            except Exception as e:
-                sync_logger.error(f"Error checking disk state for {run_id}: {e}")
-
-        path.write_text(record.model_dump_json(indent=2), encoding="utf-8")
-        self._mtimes[run_id] = path.stat().st_mtime
+        lock = self._locks[run_id]
+        with lock:
+            with self._registry_lock:
+                record = self._runs[run_id]
+                payload = record.model_dump_json(indent=2)
+            path = self.run_dir(run_id) / "run.json"
+            path.write_text(payload, encoding="utf-8")
+            with self._registry_lock:
+                self._mtimes[run_id] = path.stat().st_mtime
 
     async def append_event(self, run_id: str, event: RunEvent) -> None:
         await asyncio.to_thread(self._append_event_sync, run_id, event)
-        for subscriber in list(self._subscribers[run_id]):
+        with self._registry_lock:
+            subscribers = list(self._subscribers[run_id])
+        for subscriber in subscribers:
             subscriber.put_nowait(event)
 
     def _append_event_sync(self, run_id: str, event: RunEvent) -> None:
@@ -139,7 +140,8 @@ class RunStore:
             with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(event.model_dump_json())
                 handle.write("\n")
-            self._events_cache[run_id].append(event)
+            with self._registry_lock:
+                self._events_cache[run_id].append(event)
 
     async def request_cancel(self, run_id: str) -> None:
         await asyncio.to_thread(self._request_cancel_sync, run_id)
@@ -186,21 +188,24 @@ class RunStore:
         return self.artifact_path(run_id, node_id, name).read_text(encoding="utf-8")
 
     def get_run(self, run_id: str) -> RunRecord:
-        self._sync_runs()
-        return self._runs[run_id]
+        with self._registry_lock:
+            return self._runs[run_id]
 
     def list_runs(self) -> list[RunRecord]:
-        self._sync_runs()
-        return sorted(self._runs.values(), key=lambda run: run.created_at, reverse=True)
+        with self._registry_lock:
+            runs = list(self._runs.values())
+        return sorted(runs, key=lambda run: run.created_at, reverse=True)
 
     def get_events(self, run_id: str) -> list[RunEvent]:
-        self._sync_runs()
-        return list(self._events_cache[run_id])
+        with self._registry_lock:
+            return list(self._events_cache[run_id])
 
     async def subscribe(self, run_id: str) -> queue.Queue[RunEvent]:
         subscriber: queue.Queue[RunEvent] = queue.Queue()
-        self._subscribers[run_id].add(subscriber)
+        with self._registry_lock:
+            self._subscribers[run_id].add(subscriber)
         return subscriber
 
     async def unsubscribe(self, run_id: str, subscriber: queue.Queue[RunEvent]) -> None:
-        self._subscribers[run_id].discard(subscriber)
+        with self._registry_lock:
+            self._subscribers[run_id].discard(subscriber)

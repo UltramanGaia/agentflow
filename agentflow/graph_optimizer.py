@@ -204,3 +204,25 @@ def write_validation_result(path: Path, *, ok: bool, error: str | None = None) -
     if error is not None:
         payload["error"] = error
     path.write_text(json_dumps(payload), encoding="utf-8")
+
+
+def optimizer_failure_summary(
+    label: str,
+    *,
+    exit_code: int | None = None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    error: str | None = None,
+) -> str:
+    if error is not None:
+        pieces = [error]
+    else:
+        suffix = f" exited with code {exit_code}" if exit_code is not None else " failed"
+        pieces = [f"{label}{suffix}."]
+    normalized_stdout = (stdout or "").strip()
+    normalized_stderr = (stderr or "").strip()
+    if normalized_stdout:
+        pieces.append(f"stdout:\n{normalized_stdout}")
+    if normalized_stderr:
+        pieces.append(f"stderr:\n{normalized_stderr}")
+    return "\n\n".join(pieces)

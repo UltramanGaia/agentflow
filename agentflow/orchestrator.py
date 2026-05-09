@@ -18,8 +18,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field, ValidationError
-
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.graph_optimizer import (
@@ -33,15 +31,19 @@ from agentflow.graph_optimizer import (
     OPTIMIZER_VALIDATION_FILENAME,
     build_graph_report,
     copy_run_traces,
+    optimizer_failure_summary,
     render_graph_optimizer_prompt,
     write_editable_pipeline_python,
     write_optimizer_result,
     write_validation_result,
 )
+from agentflow.launch_artifacts import launch_artifact_payload
 from agentflow.loader import load_pipeline_from_path
+from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
 from agentflow.prepared import ExecutionPaths, build_execution_paths
 from agentflow.runner import RunnerRegistry, default_runner_registry
-from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX, Scratchboard
+from agentflow.scratchboard import SCRATCHBOARD_FILENAME
+from agentflow.scratchboard_manager import ScratchboardManager
 from agentflow.specs import (
     NodeAttempt,
     NodeResult,
@@ -58,8 +60,8 @@ from agentflow.store import RunStore
 from agentflow.success import evaluate_success
 from agentflow.tuned_agents import _parse_agent_output, _run_optimizer, resolve_node_for_execution
 from agentflow.traces import create_trace_parser
-from agentflow.utils import ensure_dir, looks_sensitive_key, redact_sensitive_shell_value, utcnow_iso
-from agentflow import worktree
+from agentflow.utils import ensure_dir, utcnow_iso
+from agentflow.worktree_manager import WorktreeManager
 
 
 _TERMINAL_NODE_STATUSES = {
@@ -70,22 +72,11 @@ _TERMINAL_NODE_STATUSES = {
 }
 
 
-class _PeriodicAction(BaseModel):
-    kind: str
-    node_ids: list[str] = Field(default_factory=list)
-    reason: str | None = None
-
-
-class _PeriodicActionEnvelope(BaseModel):
-    analysis: str | None = None
-    actions: list[_PeriodicAction] = Field(default_factory=list)
-
-
 @dataclass(slots=True)
 class _NodeExecutionOutcome:
     node_id: str
     periodic_tick_number: int | None = None
-    periodic_actions: _PeriodicActionEnvelope | None = None
+    periodic_actions: PeriodicActionEnvelope | None = None
     periodic_action_parse_error: str | None = None
 
 
@@ -127,31 +118,75 @@ class Orchestrator:
     store: RunStore
     adapters: AdapterRegistry = default_adapter_registry
     runners: RunnerRegistry = default_runner_registry
+    worktrees: WorktreeManager = field(default_factory=WorktreeManager)
+    scratchboards: ScratchboardManager = field(default_factory=ScratchboardManager)
     max_concurrent_runs: int = 2
     _run_slots: threading.Semaphore = field(init=False, repr=False)
+    _control_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _cancel_flags: dict[str, threading.Event] = field(default_factory=dict, init=False, repr=False)
     _run_finished: dict[str, threading.Event] = field(default_factory=dict, init=False, repr=False)
     _node_cancel_flags: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
     _pending_node_reruns: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
-    _scratchboards: dict[str, "Scratchboard"] = field(default_factory=dict, init=False, repr=False)
     _node_runtime_states: dict[tuple[str, str], NodeRuntimeState] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._run_slots = threading.Semaphore(self.max_concurrent_runs)
 
     def _node_runtime_state(self, run_id: str, node_id: str) -> NodeRuntimeState:
-        return self._node_runtime_states.setdefault((run_id, node_id), NodeRuntimeState())
+        with self._control_lock:
+            return self._node_runtime_states.setdefault((run_id, node_id), NodeRuntimeState())
 
     def _runtime_states_for_run(self, run_id: str) -> dict[str, NodeRuntimeState]:
-        return {
-            node_id: state
-            for (state_run_id, node_id), state in self._node_runtime_states.items()
-            if state_run_id == run_id
-        }
+        with self._control_lock:
+            return {
+                node_id: state
+                for (state_run_id, node_id), state in self._node_runtime_states.items()
+                if state_run_id == run_id
+            }
 
     def _clear_runtime_states_for_run(self, run_id: str) -> None:
-        for key in [key for key in self._node_runtime_states if key[0] == run_id]:
-            self._node_runtime_states.pop(key, None)
+        with self._control_lock:
+            for key in [key for key in self._node_runtime_states if key[0] == run_id]:
+                self._node_runtime_states.pop(key, None)
+
+    def _run_cancel_flag(self, run_id: str) -> threading.Event:
+        with self._control_lock:
+            return self._cancel_flags.setdefault(run_id, threading.Event())
+
+    def _run_finished_event(self, run_id: str) -> threading.Event | None:
+        with self._control_lock:
+            return self._run_finished.get(run_id)
+
+    def _mark_run_finished(self, run_id: str) -> None:
+        finished = self._run_finished_event(run_id)
+        if finished is not None:
+            finished.set()
+
+    def _request_node_cancel(self, run_id: str, node_id: str) -> None:
+        with self._control_lock:
+            self._node_cancel_flags.setdefault(run_id, set()).add(node_id)
+
+    def _discard_node_cancel(self, run_id: str, node_id: str) -> None:
+        with self._control_lock:
+            self._node_cancel_flags.setdefault(run_id, set()).discard(node_id)
+
+    def _queue_node_rerun(self, run_id: str, node_id: str) -> None:
+        with self._control_lock:
+            self._pending_node_reruns.setdefault(run_id, set()).add(node_id)
+
+    def _consume_pending_node_rerun(self, run_id: str, node_id: str) -> bool:
+        with self._control_lock:
+            pending = self._pending_node_reruns.setdefault(run_id, set())
+            if node_id not in pending:
+                return False
+            pending.discard(node_id)
+            return True
+
+    def _clear_run_control_state(self, run_id: str) -> None:
+        with self._control_lock:
+            self._node_cancel_flags.pop(run_id, None)
+            self._pending_node_reruns.pop(run_id, None)
+        self.scratchboards.clear_run(run_id)
 
     @staticmethod
     def _reset_node_for_cycle(record: "RunRecord", node_id: str, remaining: set[str]) -> None:
@@ -209,10 +244,11 @@ class Orchestrator:
         return False, None
 
     def _initialize_run_tracking(self, run_id: str, *, cancel_flag: threading.Event | None = None) -> None:
-        self._cancel_flags[run_id] = cancel_flag or threading.Event()
-        self._run_finished[run_id] = threading.Event()
-        self._node_cancel_flags[run_id] = set()
-        self._pending_node_reruns[run_id] = set()
+        with self._control_lock:
+            self._cancel_flags[run_id] = cancel_flag or threading.Event()
+            self._run_finished[run_id] = threading.Event()
+            self._node_cancel_flags[run_id] = set()
+            self._pending_node_reruns[run_id] = set()
 
     async def _create_queued_run(
         self,
@@ -253,7 +289,7 @@ class Orchestrator:
             finally:
                 if acquired:
                     self._run_slots.release()
-                self._run_finished[run_id].set()
+                self._mark_run_finished(run_id)
 
         threading.Thread(target=_background, name=f"agentflow-{run_id}", daemon=True).start()
 
@@ -282,8 +318,7 @@ class Orchestrator:
         await self._publish(parent_run_id, "run_completed", status=record.status.value)
         await self.store.clear_cancel_request(parent_run_id)
         await self.store.persist_run(parent_run_id)
-        self._node_cancel_flags.pop(parent_run_id, None)
-        self._pending_node_reruns.pop(parent_run_id, None)
+        self._clear_run_control_state(parent_run_id)
         return record
 
     async def _run_graph_optimization_session(self, parent_run_id: str) -> RunRecord:
@@ -315,27 +350,6 @@ class Orchestrator:
         current_pipeline = parent.pipeline
         final_child: RunRecord | None = None
 
-        def _optimizer_failure_summary(
-            label: str,
-            *,
-            exit_code: int | None = None,
-            stdout: str | None = None,
-            stderr: str | None = None,
-            error: str | None = None,
-        ) -> str:
-            if error is not None:
-                pieces = [error]
-            else:
-                suffix = f" exited with code {exit_code}" if exit_code is not None else " failed"
-                pieces = [f"{label}{suffix}."]
-            normalized_stdout = (stdout or "").strip()
-            normalized_stderr = (stderr or "").strip()
-            if normalized_stdout:
-                pieces.append(f"stdout:\n{normalized_stdout}")
-            if normalized_stderr:
-                pieces.append(f"stderr:\n{normalized_stderr}")
-            return "\n\n".join(pieces)
-
         for round_number in range(1, current_pipeline.n_run + 1):
             if self._should_cancel(parent_run_id):
                 break
@@ -361,7 +375,7 @@ class Orchestrator:
             child_pipeline = current_pipeline.model_copy(update={"optimizer": None, "n_run": 1})
             child = await self._create_queued_run(
                 child_pipeline,
-                cancel_flag=self._cancel_flags[parent_run_id],
+                cancel_flag=self._run_cancel_flag(parent_run_id),
                 optimization_parent_run_id=parent_run_id,
                 optimization_round=round_number,
             )
@@ -378,7 +392,7 @@ class Orchestrator:
             try:
                 final_child = await self.run(child.id)
             finally:
-                self._run_finished[child.id].set()
+                self._mark_run_finished(child.id)
 
             parent.nodes = deepcopy(final_child.nodes)
             parent.pipeline = current_pipeline
@@ -457,7 +471,7 @@ class Orchestrator:
                     (attempt_dir / GENERATED_PIPELINE_EDITED_FILENAME).write_text(edited_text, encoding="utf-8")
                     (round_dir / GENERATED_PIPELINE_EDITED_FILENAME).write_text(edited_text, encoding="utf-8")
                 if optimizer_result.exit_code != 0:
-                    failure_summary = _optimizer_failure_summary(
+                    failure_summary = optimizer_failure_summary(
                         "Optimizer",
                         exit_code=optimizer_result.exit_code,
                         stdout=optimizer_result.stdout,
@@ -469,7 +483,7 @@ class Orchestrator:
                     try:
                         loaded_pipeline = load_pipeline_from_path(pipeline_path)
                     except Exception as exc:
-                        failure_summary = _optimizer_failure_summary(
+                        failure_summary = optimizer_failure_summary(
                             "Optimized pipeline",
                             error=f"optimized pipeline failed to load: {exc}",
                         )
@@ -537,8 +551,7 @@ class Orchestrator:
         await self._publish(parent_run_id, "run_completed", status=parent.status.value)
         await self.store.clear_cancel_request(parent_run_id)
         await self.store.persist_run(parent_run_id)
-        self._node_cancel_flags.pop(parent_run_id, None)
-        self._pending_node_reruns.pop(parent_run_id, None)
+        self._clear_run_control_state(parent_run_id)
         return parent
 
     async def submit(self, pipeline: PipelineSpec) -> RunRecord:
@@ -570,7 +583,7 @@ class Orchestrator:
             while True:
                 record = self.store.get_run(run_id)
                 if record.status in terminal:
-                    finished = self._run_finished.get(run_id)
+                    finished = self._run_finished_event(run_id)
                     if finished is None or finished.is_set():
                         return record
                 await asyncio.sleep(0.05)
@@ -587,7 +600,7 @@ class Orchestrator:
         """
 
         record = self.store.get_run(run_id)
-        flag = self._cancel_flags.setdefault(run_id, threading.Event())
+        flag = self._run_cancel_flag(run_id)
         flag.set()
         await self.store.request_cancel(run_id)
         if record.status == RunStatus.QUEUED:
@@ -643,10 +656,7 @@ class Orchestrator:
             nodes=nodes,
         )
 
-        self._cancel_flags[new_run_id] = threading.Event()
-        self._run_finished[new_run_id] = threading.Event()
-        self._node_cancel_flags[new_run_id] = set()
-        self._pending_node_reruns[new_run_id] = set()
+        self._initialize_run_tracking(new_run_id)
         await self.store.create_run(new_run)
 
         # Copy scratchboard from old run if it exists
@@ -674,12 +684,13 @@ class Orchestrator:
         return new_run
 
     def _should_cancel(self, run_id: str) -> bool:
-        if self._cancel_flags.get(run_id, threading.Event()).is_set():
+        if self._run_cancel_flag(run_id).is_set():
             return True
         return self.store.cancel_requested(run_id)
 
     def _should_cancel_node(self, run_id: str, node_id: str) -> bool:
-        return node_id in self._node_cancel_flags.get(run_id, set())
+        with self._control_lock:
+            return node_id in self._node_cancel_flags.get(run_id, set())
 
     async def _finalize_cancelled_queue_run(self, run_id: str) -> None:
         record = self.store.get_run(run_id)
@@ -709,34 +720,8 @@ class Orchestrator:
         await self.store.append_artifact_text(run_id, node_id, "trace.jsonl", event.model_dump_json() + "\n")
         await self._publish(run_id, "node_trace", node_id=node_id, trace=event.model_dump(mode="json"))
 
-    def _is_sensitive_launch_key(self, key: str) -> bool:
-        return looks_sensitive_key(key)
-
-    def _sanitize_launch_value(self, key: str | None, value: Any) -> Any:
-        if key and self._is_sensitive_launch_key(key) and value is not None:
-            return "<redacted>"
-        if isinstance(value, dict):
-            if key == "runtime_files":
-                return sorted(value)
-            return {inner_key: self._sanitize_launch_value(inner_key, inner_value) for inner_key, inner_value in value.items()}
-        if isinstance(value, list):
-            return [self._sanitize_launch_value(None, item) for item in value]
-        return value
-
-    def _launch_artifact_payload(self, attempt_number: int, plan: Any) -> dict[str, Any]:
-        return {
-            "attempt": attempt_number,
-            "kind": plan.kind,
-            "command": redact_sensitive_shell_value(list(plan.command)) if plan.command is not None else None,
-            "env": self._sanitize_launch_value("env", plan.env),
-            "cwd": plan.cwd,
-            "stdin": plan.stdin,
-            "runtime_files": list(plan.runtime_files),
-            "payload": self._sanitize_launch_value("payload", plan.payload),
-        }
-
     async def _write_launch_artifacts(self, run_id: str, node_id: str, attempt_number: int, plan: Any) -> None:
-        payload = self._launch_artifact_payload(attempt_number, plan)
+        payload = launch_artifact_payload(attempt_number, plan)
         await self.store.write_artifact_json(run_id, node_id, "launch.json", payload)
         await self.store.write_artifact_json(run_id, node_id, f"launch-attempt-{attempt_number}.json", payload)
 
@@ -748,32 +733,6 @@ class Orchestrator:
         if reason == "run_cancelled":
             await self.store.append_artifact_text(run_id, node_id, "stderr.log", "Cancelled by user\n")
         await self._publish(run_id, "node_cancelled", node_id=node_id, reason=reason)
-
-    def _normalize_periodic_output_text(self, text: str | None) -> str:
-        normalized = str(text or "").strip()
-        if normalized.startswith("```"):
-            lines = normalized.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                normalized = "\n".join(lines[1:-1]).strip()
-                if normalized.lower().startswith("json\n"):
-                    normalized = normalized[5:].strip()
-        return normalized
-
-    def _parse_periodic_actions(
-        self,
-        text: str | None,
-    ) -> tuple[_PeriodicActionEnvelope | None, str | None]:
-        normalized = self._normalize_periodic_output_text(text)
-        if not normalized:
-            return _PeriodicActionEnvelope(), None
-        try:
-            payload = json.loads(normalized)
-        except json.JSONDecodeError as exc:
-            return None, f"invalid JSON control envelope: {exc}"
-        try:
-            return _PeriodicActionEnvelope.model_validate(payload), None
-        except ValidationError as exc:  # pragma: no cover - pydantic error details vary
-            return None, f"invalid control envelope: {exc}"
 
     def _fanout_group_settled(self, pipeline: PipelineSpec, results: dict[str, NodeResult], group_id: str) -> bool:
         member_ids = pipeline.fanouts.get(group_id, [])
@@ -811,7 +770,7 @@ class Orchestrator:
         controller_node_id: str,
         *,
         watched_group: str,
-        actions: _PeriodicActionEnvelope,
+        actions: PeriodicActionEnvelope,
         remaining: set[str],
         in_progress: dict[str, asyncio.Task["_NodeExecutionOutcome"]],
     ) -> None:
@@ -846,14 +805,14 @@ class Orchestrator:
                     if target_result.status not in {NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.RETRYING}:
                         rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_running"})
                         continue
-                    self._node_cancel_flags.setdefault(run_id, set()).add(target_node_id)
+                    self._request_node_cancel(run_id, target_node_id)
                     applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
                     continue
 
                 if target_result.status in {NodeStatus.PENDING, NodeStatus.READY}:
                     rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_started"})
                     continue
-                self._pending_node_reruns.setdefault(run_id, set()).add(target_node_id)
+                self._queue_node_rerun(run_id, target_node_id)
                 if target_result.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
                     target_result.status = NodeStatus.PENDING
                     self._node_runtime_state(run_id, target_node_id).next_scheduled_at = None
@@ -930,29 +889,23 @@ class Orchestrator:
         execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
         execution_node = execution_resolution.node
         runtime_agent = execution_resolution.runtime_agent
-        # Create git worktree if enabled (local nodes only get a worktree directory)
-        worktree_dir = None
-        if pipeline.use_worktree and execution_node.target.kind == "local":
-            if worktree.is_git_repo(pipeline.working_path):
-                try:
-                    worktree_dir = worktree.create_worktree(pipeline.working_path, node_id, run_id)
-                    wt_target = execution_node.target.model_copy(update={"cwd": str(worktree_dir)})
-                    execution_node = execution_node.model_copy(update={"target": wt_target})
-                except Exception as exc:
-                    await self._publish(run_id, "node_trace", node_id=node_id,
-                        trace={"kind": "warning", "title": f"Worktree failed: {exc}"})
+        prepared_worktree = self.worktrees.prepare_node(pipeline, execution_node, run_id=run_id)
+        execution_node = prepared_worktree.node
+        if prepared_worktree.warning is not None:
+            await self._publish(
+                run_id,
+                "node_trace",
+                node_id=node_id,
+                trace={"kind": "warning", "title": prepared_worktree.warning},
+            )
 
         paths = self._build_paths(pipeline, run_id, node_id, execution_node.target)
 
-        # Inject scratchboard file location into prompt
-        scratchboard = self._scratchboards.get(run_id)
-        if scratchboard is not None:
-            sb_path = str(scratchboard.path)
-            prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
+        prompt += self.scratchboards.prompt_suffix_for_run(run_id)
         adapter = self.adapters.get(runtime_agent)
         runner = self.runners.get(execution_node.target.kind)
         parser = create_trace_parser(runtime_agent, node.id)
-        periodic_actions: _PeriodicActionEnvelope | None = None
+        periodic_actions: PeriodicActionEnvelope | None = None
         periodic_action_parse_error: str | None = None
 
         for attempt_number in range(1, node.retries + 2):
@@ -1053,7 +1006,7 @@ class Orchestrator:
                 result.finished_at = attempt.finished_at
                 if periodic_tick_number is not None:
                     if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
-                        periodic_actions, periodic_action_parse_error = self._parse_periodic_actions(result.final_response)
+                        periodic_actions, periodic_action_parse_error = parse_periodic_actions(result.final_response)
                         if periodic_actions is not None and periodic_actions.analysis is not None:
                             result.output = periodic_actions.analysis
                             attempt.output = result.output
@@ -1112,33 +1065,14 @@ class Orchestrator:
         await self.store.write_artifact_text(run_id, node_id, "output.txt", result.output or "")
         await self.store.write_artifact_json(run_id, node_id, "result.json", result.model_dump(mode="json"))
 
-        # Merge scratchboard writes from node output
-        scratchboard = self._scratchboards.get(run_id)
-        if scratchboard is not None and result.output:
-            for line in result.output.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("SCRATCHBOARD:"):
-                    content = stripped.removeprefix("SCRATCHBOARD:").strip()
-                    await scratchboard.append(node_id, content)
+        await self.scratchboards.merge_output(run_id, node_id, result.output)
 
         # Capture diff from local worktree.
         if pipeline.use_worktree:
-            diff = ""
-            if worktree_dir is not None:
-                try:
-                    diff = worktree.get_worktree_diff(worktree_dir)
-                except Exception:
-                    pass
+            diff = self.worktrees.capture_diff_and_cleanup(prepared_worktree.lease)
             if diff:
                 await self.store.write_artifact_text(run_id, node_id, "diff.patch", diff)
             result.diff = diff
-
-            # Clean up worktree
-            if worktree_dir is not None:
-                try:
-                    worktree.remove_worktree(pipeline.working_path, worktree_dir)
-                except Exception:
-                    pass
 
         await self.store.persist_run(run_id)
         if periodic_tick_number is not None:
@@ -1174,8 +1108,7 @@ class Orchestrator:
 
         # Create scratchboard if enabled
         if pipeline.scratchboard:
-            sb_path = self.store.base_dir / run_id / SCRATCHBOARD_FILENAME
-            self._scratchboards[run_id] = Scratchboard(sb_path)
+            self.scratchboards.create_for_run(self.store.base_dir, run_id)
 
         # Exclude nodes already in a terminal state (e.g. completed from a resumed run)
         remaining = {
@@ -1343,7 +1276,7 @@ class Orchestrator:
                     task = in_progress.pop(node_id)
                     outcome = await task
                     node = node_map[node_id]
-                    self._node_cancel_flags.setdefault(run_id, set()).discard(node_id)
+                    self._discard_node_cancel(run_id, node_id)
 
                     if node.schedule is not None:
                         if outcome.periodic_actions is not None:
@@ -1450,11 +1383,10 @@ class Orchestrator:
                             )
 
                     if (
-                        node_id in self._pending_node_reruns.setdefault(run_id, set())
-                        and record.nodes[node_id].status in _TERMINAL_NODE_STATUSES
+                        record.nodes[node_id].status in _TERMINAL_NODE_STATUSES
                         and not self._should_cancel(run_id)
+                        and self._consume_pending_node_rerun(run_id, node_id)
                     ):
-                        self._pending_node_reruns[run_id].discard(node_id)
                         record.nodes[node_id].status = NodeStatus.PENDING
                         record.nodes[node_id].finished_at = None
                         self._node_runtime_state(run_id, node_id).next_scheduled_at = None
@@ -1476,7 +1408,6 @@ class Orchestrator:
         await self._publish(run_id, "run_completed", status=record.status.value)
         await self.store.clear_cancel_request(run_id)
         await self.store.persist_run(run_id)
-        self._node_cancel_flags.pop(run_id, None)
-        self._pending_node_reruns.pop(run_id, None)
+        self._clear_run_control_state(run_id)
         self._clear_runtime_states_for_run(run_id)
         return record
