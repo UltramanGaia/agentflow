@@ -222,7 +222,6 @@ agentflow run pipeline.py --output summary
 agentflow evolve <run_id> -n plan   # evolve a tuned agent from prior Codex traces
 agentflow tuned-agents              # list locally registered tuned agents
 agentflow tuned-agent codex_tuned   # inspect one tuned agent
-agentflow inspect pipeline.py       # show expanded graph
 agentflow validate pipeline.py      # check without running
 agentflow templates                  # list starter templates
 agentflow init > pipeline.py        # scaffold a starter

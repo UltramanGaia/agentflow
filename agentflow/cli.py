@@ -480,22 +480,6 @@ def _stream_supports_tty_summary(*, err: bool) -> bool:
     return bool(callable(isatty) and isatty())
 
 
-def _echo_inspection(report: dict[str, Any], *, output: OutputFormat) -> None:
-    from agentflow.inspection import build_launch_inspection_summary
-
-    resolved_output = _resolve_output_format(output)
-
-    if resolved_output == OutputFormat.SUMMARY:
-        from agentflow.inspection import render_launch_inspection_summary
-
-        typer.echo(render_launch_inspection_summary(report))
-        return
-    if resolved_output == OutputFormat.JSON_SUMMARY:
-        typer.echo(json.dumps(build_launch_inspection_summary(report), indent=2))
-        return
-    typer.echo(json.dumps(report, indent=2))
-
-
 def _parse_template_settings(raw_settings: list[str] | None) -> dict[str, str]:
     settings: dict[str, str] = {}
     for raw_setting in raw_settings or []:
@@ -825,27 +809,6 @@ def tuned_agent(
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     typer.echo(_render_tuned_agent_detail(record))
-
-
-@app.command()
-def inspect(
-    path: str,
-    node: list[str] = typer.Option(None, "--node", "-n", help="Inspect only the selected node ids."),
-    runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
-    output: OutputFormat = typer.Option(
-        OutputFormat.AUTO,
-        "--output",
-        help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
-    ),
-) -> None:
-    from agentflow.inspection import build_launch_inspection
-
-    pipeline = _load_pipeline(path)
-    try:
-        report = build_launch_inspection(pipeline, runs_dir=runs_dir, node_ids=node or None)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--node") from exc
-    _echo_inspection(report, output=output)
 
 
 @app.command()

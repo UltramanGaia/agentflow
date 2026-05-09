@@ -20,17 +20,23 @@ def _pipeline_with_shell(shell: str) -> dict[str, object]:
     }
 
 
-def test_specs_do_not_depend_on_shell_runtime_validation() -> None:
-    pipeline = PipelineSpec.model_validate(_pipeline_with_shell("bash --command echo"))
+def test_specs_reject_target_shell_runtime_config() -> None:
+    with pytest.raises(ValueError, match="no longer supported on local targets"):
+        PipelineSpec.model_validate(_pipeline_with_shell("bash --command echo"))
 
-    assert pipeline.nodes[0].target.shell == "bash --command echo"
 
-
-def test_loader_validates_runtime_shell_config() -> None:
-    with pytest.raises(ValueError, match="unsupported bash long option"):
+def test_loader_rejects_target_shell_runtime_config() -> None:
+    with pytest.raises(ValueError, match="no longer supported on local targets"):
         load_pipeline_from_data(_pipeline_with_shell("bash --command echo"))
 
 
-def test_local_target_keeps_structural_shell_validation() -> None:
-    with pytest.raises(ValueError, match="require `target.shell`"):
-        LocalTarget(shell_init="source ~/.bashrc")
+def test_local_target_allows_shell_init_without_shell() -> None:
+    target = LocalTarget(shell_init="source ~/.bashrc")
+
+    assert target.shell is None
+    assert target.shell_init == "source ~/.bashrc"
+
+
+def test_local_target_rejects_shell_flags() -> None:
+    with pytest.raises(ValueError, match="no longer supported on local targets"):
+        LocalTarget(shell_login=True)

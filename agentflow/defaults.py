@@ -117,7 +117,6 @@ def _render_codex_repo_sweep_batched_template(values: Mapping[str, str] | None =
 # Usage:
 #   agentflow init repo-sweep-batched.py --template codex-repo-sweep-batched
 #   agentflow init repo-sweep-security.py --template codex-repo-sweep-batched --set shards=64 --set batch_size=8 --set concurrency=16 --set focus="security bugs, privilege boundaries, and missing coverage"
-#   agentflow inspect repo-sweep-batched.py --output summary
 #   agentflow run repo-sweep-batched.py
 
 from agentflow import Graph, codex, fanout, merge

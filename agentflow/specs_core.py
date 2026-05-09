@@ -174,18 +174,16 @@ class LocalTarget(BaseModel):
 
     @model_validator(mode="after")
     def validate_shell_options_have_shell(self) -> "LocalTarget":
+        unsupported_fields: list[str] = []
         if self.shell and self.shell.strip():
-            return self
-        missing_shell_fields: list[str] = []
+            unsupported_fields.append("shell")
         if self.shell_login:
-            missing_shell_fields.append("shell_login")
+            unsupported_fields.append("shell_login")
         if self.shell_interactive:
-            missing_shell_fields.append("shell_interactive")
-        if self.shell_init:
-            missing_shell_fields.append("shell_init")
-        if missing_shell_fields:
-            joined = ", ".join(f"`target.{field}`" for field in missing_shell_fields)
-            raise ValueError(f"{joined} require `target.shell` on local targets")
+            unsupported_fields.append("shell_interactive")
+        if unsupported_fields:
+            joined = ", ".join(f"`target.{field}`" for field in unsupported_fields)
+            raise ValueError(f"{joined} are no longer supported on local targets")
         return self
 
 
