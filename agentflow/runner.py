@@ -76,27 +76,13 @@ class Runner(Protocol):
 class LocalRunner:
     _TERMINATE_GRACE_SECONDS = 1.0
 
-    def _render_shell_init(self, shell_init: str | list[str] | None) -> str | None:
-        if isinstance(shell_init, str):
-            normalized = shell_init.strip()
-            return normalized or None
-        if isinstance(shell_init, (list, tuple)):
-            commands = [command.strip() for command in shell_init if isinstance(command, str) and command.strip()]
-            if commands:
-                return " && ".join(commands)
-        return None
-
     def _command_for_target(self, node: NodeSpec, prepared: PreparedExecution) -> tuple[list[str], dict[str, str]]:
         target = node.target
         if not isinstance(target, LocalTarget):
             return prepared.command, {}
 
         command_text = shlex.join(prepared.command)
-        shell_command = 'eval "$AGENTFLOW_TARGET_COMMAND"'
-        shell_init = self._render_shell_init(target.shell_init)
-        if shell_init:
-            shell_command = f"{shell_init} && {shell_command}"
-        return ["/bin/bash", "-c", shell_command], {"AGENTFLOW_TARGET_COMMAND": command_text}
+        return ["/bin/bash", "-c", 'eval "$AGENTFLOW_TARGET_COMMAND"'], {"AGENTFLOW_TARGET_COMMAND": command_text}
 
     def _resolve_launch_plan(
         self,

@@ -22,7 +22,7 @@ class PreparedWorktreeNode:
 
 class WorktreeManager:
     def prepare_node(self, pipeline: PipelineSpec, node: NodeSpec, *, run_id: str) -> PreparedWorktreeNode:
-        if not pipeline.use_worktree or node.target.kind != "local":
+        if not pipeline.use_worktree:
             return PreparedWorktreeNode(node=node)
         if not worktree.is_git_repo(pipeline.working_path):
             return PreparedWorktreeNode(node=node)

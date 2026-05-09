@@ -78,7 +78,7 @@ def _resolve_file_relative_paths(parsed: dict[str, Any], base_dir: Path) -> dict
         resolved["working_dir"] = str(working_dir)
 
     def _resolve_local_target_payload(target: Any) -> Any:
-        if not isinstance(target, dict) or target.get("kind", "local") != "local":
+        if not isinstance(target, dict):
             return target
         cwd = target.get("cwd")
         if not isinstance(cwd, str) or not cwd:

@@ -169,7 +169,7 @@ def render_graph_optimizer_prompt(
         "- Preserve a valid Python script that defines `PIPELINE` and prints it as JSON when executed.\n"
         "- Keep at least one node in the graph.\n"
         "- Keep node ids stable unless there is a strong reason to rename, add, or remove them.\n"
-        "- Keep `working_dir` and local target `cwd` paths absolute unless you intentionally want to retarget execution.\n"
+        "- Keep `working_dir` and target `cwd` paths absolute unless you intentionally want to retarget execution.\n"
         "- If the previous attempt failed, fix that load or validation error in `pipeline.py` before making further changes.\n"
         "- Do not run the full graph yourself; the outer harness will validate and run the next round.\n"
         "\n"

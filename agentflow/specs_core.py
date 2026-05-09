@@ -91,13 +91,6 @@ def builtin_agent_kind(value: str | AgentKind | None) -> AgentKind | None:
     except ValueError:
         return None
 
-
-class ProviderConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = "default"
-
-
 _FANOUT_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FANOUT_RESERVED_CONTEXT_NAMES = {"fanout", "fanouts", "nodes", "pipeline"}
 _FANOUT_MEMBER_RESERVED_NAMES = {"index", "number", "count", "suffix", "value", "template_id", "node_id"}
@@ -108,27 +101,21 @@ _FANOUT_EXPANSION_MODE_KEYS = ("count", "values", "matrix", "group_by", "batches
 class LocalTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["local"] = "local"
     cwd: str | None = None
-    shell_init: str | list[str] | None = None
 
-    @field_validator("shell_init")
+    @model_validator(mode="before")
     @classmethod
-    def validate_shell_init(cls, value: str | list[str] | None) -> str | list[str] | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            normalized = value.strip()
-            if not normalized:
-                raise ValueError("`target.shell_init` must not be empty")
-            return normalized
-
-        normalized_commands = [command.strip() for command in value if command.strip()]
-        if not normalized_commands:
-            raise ValueError("`target.shell_init` must contain at least one non-empty command")
-        if len(normalized_commands) != len(value):
-            raise ValueError("`target.shell_init` list entries must be non-empty strings")
-        return normalized_commands
+    def validate_legacy_kind(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        kind = value.get("kind")
+        if kind is None:
+            return value
+        if kind != "local":
+            raise ValueError("`target.kind` currently only supports `local`")
+        normalized = dict(value)
+        normalized.pop("kind", None)
+        return normalized
 
 
 TargetSpec = LocalTarget

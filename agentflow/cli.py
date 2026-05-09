@@ -28,7 +28,6 @@ from agentflow.specs import (
     NodeSpec,
     NodeStatus,
     PipelineSpec,
-    ProviderConfig,
     RunRecord,
     RunStatus,
     normalize_agent_name,
@@ -171,14 +170,6 @@ def _node_attempt_count(node: NodeResult) -> int:
     return len(attempts)
 
 
-def _provider_name(value: str | ProviderConfig | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return value.name or None
-
-
 def _pipeline_node_map(record: RunRecord) -> dict[str, NodeSpec]:
     return {node.id: node for node in record.pipeline.nodes}
 
@@ -192,10 +183,6 @@ def _node_identity(node_id: str, pipeline_node: NodeSpec | None) -> str:
 
     if pipeline_node.model:
         parts.append(f"model={pipeline_node.model}")
-
-    provider = _provider_name(pipeline_node.provider)
-    if provider:
-        parts.append(f"provider={provider}")
 
     return f"{node_id} [{', '.join(parts)}]"
 
@@ -305,9 +292,6 @@ def _build_run_summary(record: RunRecord, run_dir: Path | str | None = None) -> 
             node_summary["agent"] = _status_value(pipeline_node.agent)
             if pipeline_node.model:
                 node_summary["model"] = pipeline_node.model
-            provider = _provider_name(pipeline_node.provider)
-            if provider:
-                node_summary["provider"] = provider
         attempts = _node_attempt_count(node)
         if attempts:
             node_summary["attempts"] = attempts
@@ -349,9 +333,6 @@ def _render_run_summary(record: RunRecord, run_dir: Path | str | None = None) ->
             model = node.get("model")
             if model:
                 parts.append(f"model={model}")
-            provider = node.get("provider")
-            if provider:
-                parts.append(f"provider={provider}")
             identity = node_id if not parts else f"{node_id} [{', '.join(parts)}]"
             rendered = f"{identity}: {node['status']}"
             metadata: list[str] = []

@@ -117,7 +117,7 @@ with Graph("mixed") as g:
         model="anthropic/claude-sonnet-4-6:high",
     )
 
-    # Local: LMStudio (add the provider once in ~/.pi/agent/models.json)
+    # Local: LMStudio (configure it once in ~/.pi/agent/models.json)
     scan = pi(
         task_id="scan",
         prompt="Scan the repo for TODOs.",
@@ -127,8 +127,7 @@ with Graph("mixed") as g:
 ```
 
 AgentFlow assumes each underlying agent has already been configured by its own
-CLI/config files. Use `provider="name"` only when the agent supports selecting a
-preconfigured provider/profile by name.
+CLI/config files. In practice you usually only need to set `model`.
 
 ## Gaia Nodes
 

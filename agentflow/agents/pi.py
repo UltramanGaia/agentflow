@@ -13,7 +13,6 @@ _PI_READ_WRITE_TOOLS = "read,bash,edit,write,grep,find,ls"
 
 class PiAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
-        provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "pi"
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
 
@@ -27,9 +26,6 @@ class PiAdapter(AgentAdapter):
 
         tools = _PI_READ_ONLY_TOOLS if node.tools == ToolAccess.READ_ONLY else _PI_READ_WRITE_TOOLS
         command.extend(["--tools", tools])
-
-        if provider and provider.name and "/" not in (node.model or ""):
-            command.extend(["--provider", provider.name])
 
         if node.model:
             command.extend(["--model", node.model])

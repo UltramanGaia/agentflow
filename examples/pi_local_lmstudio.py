@@ -3,7 +3,7 @@
 Fans a scan out across several files using the ``pi`` CLI pointed at a locally
 running LMStudio endpoint, then hands the merged findings to Codex for a
 final review. Assumes the user's ``~/.pi/agent/models.json`` already declares
-an ``lmstudio`` provider (the default when LMStudio is installed). Swap the
+an ``lmstudio`` model entry (the default when LMStudio is installed). Swap the
 ``model`` kwarg for whichever model you have loaded in LMStudio.
 """
 

@@ -18,7 +18,7 @@ _NODE_DEFAULT_FORBIDDEN_FIELDS = {
     "fanout_dependencies",
 }
 _NODE_DEFAULT_LIST_MERGE_FIELDS = {"extra_args", "skills"}
-_NODE_DEFAULT_DICT_MERGE_FIELDS = {"provider"}
+_NODE_DEFAULT_DICT_MERGE_FIELDS: set[str] = set()
 
 
 def _local_target_defaults_payload(value: Any) -> dict[str, Any] | None:
@@ -28,7 +28,8 @@ def _local_target_defaults_payload(value: Any) -> dict[str, Any] | None:
         payload = dict(value)
     else:
         return None
-    payload.setdefault("kind", "local")
+    if payload.get("kind") == "local":
+        payload.pop("kind", None)
     return payload
 
 
@@ -60,11 +61,6 @@ def _node_default_payload(
 
 def _merge_default_target_payload(default_value: Any, override_value: Any) -> Any:
     if not isinstance(default_value, dict) or not isinstance(override_value, dict):
-        return deepcopy(override_value)
-
-    default_kind = default_value.get("kind")
-    override_kind = override_value.get("kind")
-    if default_kind and override_kind and default_kind != override_kind:
         return deepcopy(override_value)
 
     merged = deepcopy(default_value)
@@ -182,10 +178,6 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         if local_target_defaults is None:
             updated_node["target"] = target_payload
-            merged_nodes.append(updated_node)
-            continue
-
-        if target_payload.get("kind", local_target_defaults.get("kind", "local")) != "local":
             merged_nodes.append(updated_node)
             continue
 

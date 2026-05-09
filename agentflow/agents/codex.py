@@ -10,7 +10,6 @@ class CodexAdapter(AgentAdapter):
         return "read-only" if node.tools == ToolAccess.READ_ONLY else "workspace-write"
 
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
-        provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "codex"
         sandbox = self._resolve_sandbox_mode(node)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
@@ -28,8 +27,6 @@ class CodexAdapter(AgentAdapter):
         ]
         if node.model:
             command.extend(["--model", node.model])
-        if provider:
-            command.extend(["--profile", provider.name])
         if repo_instructions_ignored:
             command.extend(["--disable", "plugins"])
             command.extend(["--add-dir", paths.target_workdir])

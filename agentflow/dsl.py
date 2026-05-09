@@ -167,9 +167,10 @@ class Graph:
 def _normalize_local_target(value: Any) -> Any:
     if not isinstance(value, dict):
         return deepcopy(value)
-    if "kind" in value:
-        return deepcopy(value)
-    return {"kind": "local", **deepcopy(value)}
+    normalized = deepcopy(value)
+    if normalized.get("kind") == "local":
+        normalized.pop("kind", None)
+    return normalized
 
 
 def _normalize_node_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -371,7 +372,6 @@ def pi(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     syntax (e.g. ``"lmstudio/mythos-26b"`` or ``"anthropic/claude-sonnet-4-6:high"``).
 
     AgentFlow assumes Pi has already been configured by its own config files.
-    Pass ``provider="name"`` only to select a preconfigured provider by name.
     """
     return _node(AgentKind.PI, task_id=task_id, prompt=prompt, **kwargs)
 

@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agentflow.provider import resolve_provider
 from agentflow.specs_core import (
     AgentKind,
     CaptureMode,
@@ -14,7 +13,6 @@ from agentflow.specs_core import (
     LocalTarget,
     NodeStatus,
     PeriodicScheduleSpec,
-    ProviderConfig,
     RepoInstructionsMode,
     RunStatus,
     SkipCriterion,
@@ -35,7 +33,6 @@ class NodeSpec(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     on_failure_restart: list[str] = Field(default_factory=list)
     model: str | None = None
-    provider: str | ProviderConfig | None = None
     tools: ToolAccess = ToolAccess.READ_ONLY
     skills: list[str] = Field(default_factory=list)
     target: TargetSpec = Field(default_factory=LocalTarget)
@@ -73,9 +70,6 @@ class NodeSpec(BaseModel):
         if self.schedule is not None:
             if self.fanout_group is not None:
                 raise ValueError("scheduled nodes cannot also use `fanout`")
-            if self.target.kind != "local":
-                raise ValueError("scheduled nodes currently require a local target")
-        resolve_provider(self.provider, self.agent)
         return self
 
 

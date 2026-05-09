@@ -302,10 +302,6 @@ def resolve_node_for_execution(node: NodeSpec, workspace: Path) -> PreparedAgent
     version = resolve_tuned_agent_version(workspace, normalize_agent_name(node.agent))
     if version is None:
         raise KeyError(f"unknown tuned agent `{node.agent}`")
-    if node.target.kind != "local":
-        raise ValueError(
-            f"tuned agent `{node.agent}` currently requires a local target; got `{node.target.kind}`"
-        )
 
     target = node.target
     resolved_target = target.model_copy(update={"cwd": target.cwd or version.workdir})
@@ -391,7 +387,7 @@ def _run_optimizer(
             "prompt": prompt,
             "tools": "read_write",
             "repo_instructions_mode": "ignore",
-            "target": {"kind": "local", "cwd": str(repo_dir)},
+            "target": {"cwd": str(repo_dir)},
         }
     )
     adapter = default_adapter_registry.get(optimizer)
