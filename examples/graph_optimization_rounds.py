@@ -5,7 +5,6 @@ so we prepend the repo root when needed to keep this loader-consumable in a
 repo checkout without relying on an editable installation.
 """
 
-import os
 from pathlib import Path
 import sys
 
@@ -17,30 +16,21 @@ from agentflow import Graph, codex
 
 optimizer = "codex"  # agent used to patch the graph between rounds
 n_run = 2  # total optimization rounds
-provider = {
-    "name": "openai-custom",
-    "base_url": os.environ.get("AGENTFLOW_OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
-    "api_key_env": "OPENAI_API_KEY",
-    "wire_api": "responses",
-}
 
 with Graph("graph-optimization-rounds", optimizer=optimizer, n_run=n_run, concurrency=2) as g:
     plan = codex(
         task_id="plan",
         prompt="Draft a short implementation plan.",
-        provider=provider,
         repo_instructions_mode="ignore",
     )
     review = codex(
         task_id="review",
         prompt="Review the plan for gaps and missing steps.",
-        provider=provider,
         repo_instructions_mode="ignore",
     )
     summary = codex(
         task_id="summary",
         prompt="Summarize the approved plan and next actions.",
-        provider=provider,
         repo_instructions_mode="ignore",
     )
 

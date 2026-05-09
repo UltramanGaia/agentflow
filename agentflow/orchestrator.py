@@ -920,7 +920,7 @@ class Orchestrator:
                         success_criteria=execution_node.success_criteria, tools=execution_node.tools,
                         model=execution_node.model, capture=execution_node.capture, env=execution_node.env,
                         extra_args=execution_node.extra_args, provider=execution_node.provider,
-                        mcps=execution_node.mcps, skills=execution_node.skills, schedule=execution_node.schedule,
+                        skills=execution_node.skills, schedule=execution_node.schedule,
                         fanout_group=execution_node.fanout_group, fanout_member=execution_node.fanout_member,
                         on_failure_restart=execution_node.on_failure_restart,
                         fanout_dependencies=getattr(execution_node, 'fanout_dependencies', {}),

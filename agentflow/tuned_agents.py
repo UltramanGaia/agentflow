@@ -389,28 +389,12 @@ def _run_optimizer(
     env: dict[str, str],
 ) -> CommandExecution:
     normalized_env = dict(env)
-    ambient_openai_base_url = (
-        normalized_env.get("OPENAI_BASE_URL")
-        or normalized_env.get("AGENTFLOW_OPENAI_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or os.environ.get("AGENTFLOW_OPENAI_BASE_URL")
-    )
-    provider: dict[str, str] | None = None
-    if optimizer == AgentKind.CODEX and ambient_openai_base_url:
-        normalized_env.setdefault("OPENAI_BASE_URL", ambient_openai_base_url)
-        provider = {
-            "name": "openai-custom",
-            "base_url": ambient_openai_base_url,
-            "api_key_env": "OPENAI_API_KEY",
-            "wire_api": "responses",
-        }
     node = NodeSpec.model_validate(
         {
             "id": "optimizer",
             "agent": optimizer.value,
             "prompt": prompt,
             "tools": "read_write",
-            "provider": provider,
             "repo_instructions_mode": "ignore",
             "target": {"kind": "local", "cwd": str(repo_dir)},
             "env": normalized_env,

@@ -33,10 +33,6 @@ _GENERATED = "<generated>"
 _INSPECT_PLACEHOLDER_PREFIX = "<inspect placeholder for nodes."
 _OK_LAUNCH_ENV_OVERRIDE_SOURCES = {
     "node.env",
-    "provider.env",
-    "provider.base_url",
-    "provider.headers",
-    "provider.api_key_env",
 }
 
 
@@ -160,14 +156,6 @@ def _provider_summary(node_plan: dict[str, Any]) -> str | None:
     if name:
         parts.append(str(name))
 
-    api_key_env = provider.get("api_key_env")
-    if api_key_env:
-        parts.append(f"key={api_key_env}")
-
-    base_url = provider.get("base_url")
-    if base_url:
-        parts.append(f"url={base_url}")
-
     if not parts:
         return None
     return ", ".join(parts)
@@ -200,22 +188,12 @@ def _bootstrap_override_origin(
 
 def _local_launch_env(node: NodeSpec, resolved_provider: object) -> dict[str, str]:
     env: dict[str, str] = {}
-    provider_env = getattr(resolved_provider, "env", None)
-    if isinstance(provider_env, dict):
-        env.update({str(key): str(value) for key, value in provider_env.items() if value is not None})
     if isinstance(node.env, dict):
         env.update({str(key): str(value) for key, value in node.env.items() if value is not None})
     return env
 
 
 def _resolved_auth_requirement(node: NodeSpec) -> tuple[str | None, str | None]:
-    resolved_provider = resolve_execution_provider(node.provider, node.agent)
-    if resolved_provider is not None and resolved_provider.api_key_env:
-        return resolved_provider.api_key_env, resolved_provider.name
-    if node.agent == AgentKind.CODEX:
-        return "OPENAI_API_KEY", "openai"
-    if node.agent == AgentKind.CLAUDE:
-        return "ANTHROPIC_API_KEY", "anthropic"
     return None, None
 
 
@@ -254,50 +232,9 @@ def _auth_summary(
 ) -> str | None:
     api_key_env, provider_name = _resolved_auth_requirement(node)
     if not api_key_env:
+        if node.agent in {AgentKind.CODEX, AgentKind.CLAUDE, AgentKind.PI, AgentKind.GAIA}:
+            return "uses the agent's configured auth/runtime profile"
         return None
-
-    target = node.target
-    explicit_bootstrap_source: tuple[str, str] | None = None
-    bash_startup_source: tuple[str, str] | None = None
-    if getattr(target, "kind", None) == "local":
-        effective_home = target_bash_home(target, env=launch_env, cwd=cwd)
-        shell_init = getattr(target, "shell_init", None)
-        shell_init_value = shell_init_exported_env_var_value(
-            shell_init,
-            api_key_env,
-            home=effective_home,
-            cwd=cwd,
-            env=launch_env,
-        )
-        if _has_nonempty_shell_value(shell_init_value):
-            explicit_bootstrap_source = ("`target.shell_init`", "target.shell_init")
-
-        shell = getattr(target, "shell", None)
-        shell_value = shell_template_exported_env_var_value_before_command(
-            shell if isinstance(shell, str) else None,
-            api_key_env,
-            home=effective_home,
-            cwd=cwd,
-            env=launch_env,
-            interactive_bash=target_uses_interactive_bash(target),
-        )
-        prefixed_value = shell_command_prefix_env_value(shell if isinstance(shell, str) else None, api_key_env)
-        if explicit_bootstrap_source is None and (
-            _has_nonempty_shell_value(shell_value) or _has_nonempty_shell_value(prefixed_value)
-        ):
-            explicit_bootstrap_source = ("`target.shell`", "target.shell")
-
-        if target_bash_startup_exports_env_var(
-            target,
-            api_key_env,
-            home=effective_home,
-            env=launch_env,
-            cwd=cwd,
-        ):
-            bash_startup_source = _bash_startup_auth_source_label(target)
-
-    if explicit_bootstrap_source is not None:
-        return _format_auth_source_summary(api_key_env, explicit_bootstrap_source)
 
     if _has_nonempty_env_value(node.env, api_key_env):
         return _format_auth_source_summary(
@@ -305,29 +242,7 @@ def _auth_summary(
             ("`node.env`", "node.env"),
         )
 
-    provider_env = getattr(resolved_provider, "env", None)
-    if _has_nonempty_env_value(provider_env, api_key_env):
-        return _format_auth_source_summary(
-            api_key_env,
-            ("`provider.env`", "provider.env"),
-        )
-
-    if str(os.getenv(api_key_env, "")).strip():
-        return _format_auth_source_summary(
-            api_key_env,
-            ("current environment", "current environment"),
-        )
-
-    if bash_startup_source is not None:
-        return _format_auth_source_summary(api_key_env, bash_startup_source)
-
-    if node.agent == AgentKind.CODEX:
-        return "Codex CLI login or `OPENAI_API_KEY` via current environment"
-
-    expectation_sources = ["current environment", "`node.env`", "`provider.env`"]
-    if getattr(target, "kind", None) == "local":
-        expectation_sources.append("local shell bootstrap")
-    return f"expects `{api_key_env}` via {', '.join(expectation_sources[:-1])}, or {expectation_sources[-1]}"
+    return _format_auth_source_summary(api_key_env, ("the agent config", "agent config"))
 
 
 def _local_bootstrap_auth_override_source(
@@ -469,11 +384,6 @@ def _launch_env_override_warning(key: str, current_value: str, launch_value: str
     if not current_value.strip() or current_value == launch_value:
         return None
 
-    if key.endswith("_BASE_URL"):
-        if launch_value.strip():
-            return f"Launch env overrides current `{key}` from `{current_value}` to `{launch_value}`."
-        return f"Launch env clears current `{key}` value `{current_value}`."
-
     if key.endswith("_CUSTOM_HEADERS") or looks_sensitive_key(key):
         if not launch_value.strip():
             return f"Launch env clears current `{key}` for this node."
@@ -486,11 +396,6 @@ def _launch_env_override_source_label(detail: dict[str, Any]) -> str | None:
     source = detail.get("source")
     if not isinstance(source, str) or not source:
         return None
-
-    if source == "provider.api_key_env":
-        source_env_key = detail.get("source_env_key")
-        if isinstance(source_env_key, str) and source_env_key:
-            return f"`provider.api_key_env` (`{source_env_key}`)"
 
     return f"`{source}`"
 
@@ -557,25 +462,6 @@ def _launch_env_override_source(node: NodeSpec, resolved_provider: Any, key: str
     if _env_declares_key(node.env, key):
         return {"source": "node.env"}
 
-    provider_env = getattr(resolved_provider, "env", None)
-    if _env_declares_key(provider_env, key):
-        return {"source": "provider.env"}
-
-    if resolved_provider is None:
-        return None
-
-    provider_base_url = str(getattr(resolved_provider, "base_url", "") or "").strip()
-    if key.endswith("_BASE_URL") and provider_base_url:
-        return {"source": "provider.base_url"}
-
-    provider_headers = getattr(resolved_provider, "headers", None)
-    if key.endswith("_CUSTOM_HEADERS") and provider_headers:
-        return {"source": "provider.headers"}
-
-    provider_api_key_env = str(getattr(resolved_provider, "api_key_env", "") or "").strip()
-    if key == "ANTHROPIC_API_KEY" and provider_api_key_env:
-        return {"source": "provider.api_key_env", "source_env_key": provider_api_key_env}
-
     return None
 
 
@@ -595,13 +481,9 @@ def _launch_env_override_details(
             continue
 
         detail: dict[str, Any] = {"key": key}
-        if key.endswith("_BASE_URL"):
-            detail["current_value"] = str(current_value)
-            detail["launch_value"] = str(launch_value)
-        else:
-            detail["redacted"] = True
-            if not str(launch_value).strip():
-                detail["cleared"] = True
+        detail["redacted"] = True
+        if not str(launch_value).strip():
+            detail["cleared"] = True
         source = _launch_env_override_source(node, resolved_provider, key)
         if source:
             detail.update(source)
@@ -691,16 +573,6 @@ def _bootstrap_env_override_notes(
     ]
 
 
-def _ambient_base_url_env_key(node: NodeSpec) -> str | None:
-    if getattr(node.target, "kind", "local") != "local":
-        return None
-    if node.agent == AgentKind.CODEX:
-        return "OPENAI_BASE_URL"
-    if node.agent == AgentKind.CLAUDE:
-        return "ANTHROPIC_BASE_URL"
-    return None
-
-
 def _local_bootstrap_sets_env_var(
     target: Any,
     env_var: str,
@@ -740,7 +612,7 @@ def _format_launch_env_inheritance_detail(node: NodeSpec, detail: dict[str, Any]
     current_value = str(detail["current_value"])
     agent_name = normalize_agent_name(node.agent).capitalize()
     return (
-        f"Launch inherits current `{key}` value `{current_value}`; configure `provider` or `node.env` "
+        f"Launch inherits current `{key}` value `{current_value}`; configure `node.env` "
         f"explicitly if you want {agent_name} routing pinned for this node."
     )
 
@@ -752,21 +624,7 @@ def _launch_env_inheritance_details(
     *,
     cwd: str | None = None,
 ) -> list[dict[str, Any]]:
-    key = _ambient_base_url_env_key(node)
-    if key is None:
-        return []
-
-    current_value = str(os.getenv(key, "") or "").strip()
-    if not current_value:
-        return []
-
-    if key in launch_env:
-        return []
-
-    if _local_bootstrap_sets_env_var(node.target, key, env=launch_env, cwd=cwd):
-        return []
-
-    return [{"key": key, "current_value": current_value, "source": "current environment"}]
+    return []
 
 
 def _launch_env_inheritance_warnings(
@@ -796,12 +654,6 @@ def _execution_mode_summary(node_plan: dict[str, Any]) -> str | None:
     if not parts:
         return None
     return ", ".join(parts)
-
-
-def _mcp_names(node_plan: dict[str, Any]) -> list[str]:
-    mcps = node_plan.get("mcps") or []
-    names = [str(item.get("name")) for item in mcps if isinstance(item, dict) and item.get("name")]
-    return names
 
 
 def build_launch_inspection(
@@ -852,7 +704,6 @@ def build_launch_inspection(
             "tools": node.tools.value,
             "capture": node.capture.value,
             "skills": list(node.skills),
-            "mcps": [mcp.model_dump(mode="json") for mcp in node.mcps],
             "depends_on": list(node.depends_on),
             "provider": node.provider.model_dump(mode="json") if hasattr(node.provider, "model_dump") else node.provider,
             "resolved_provider": resolved_provider.model_dump(mode="json") if resolved_provider is not None else None,
@@ -993,9 +844,6 @@ def build_launch_inspection_summary(report: dict[str, Any]) -> dict[str, Any]:
         skills = node.get("skills")
         if skills:
             node_summary["skills"] = list(skills)
-        mcp_names = _mcp_names(node)
-        if mcp_names:
-            node_summary["mcps"] = mcp_names
         provider_summary = _provider_summary(node)
         if provider_summary:
             node_summary["provider"] = provider_summary
@@ -1075,9 +923,6 @@ def render_launch_inspection_summary(report: dict[str, Any]) -> str:
         skills = node.get("skills") or []
         if skills:
             lines.append(f"  Skills: {', '.join(skills)}")
-        mcp_names = _mcp_names(node)
-        if mcp_names:
-            lines.append(f"  MCPs: {', '.join(mcp_names)}")
         provider_summary = _provider_summary(node)
         if provider_summary:
             lines.append(f"  Provider: {provider_summary}")

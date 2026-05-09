@@ -131,9 +131,9 @@ with Graph("mixed") as g:
     )
 ```
 
-For one-off inline provider configs (e.g. an LMStudio endpoint), pass a full
-`ProviderConfig` via `provider={...}` and AgentFlow materializes a scoped
-`models.json` for the run. See `examples/pi_local_lmstudio.py`.
+AgentFlow assumes each underlying agent has already been configured by its own
+CLI/config files. Use `provider="name"` only when the agent supports selecting a
+preconfigured provider/profile by name.
 
 ## Gaia Nodes
 

@@ -112,11 +112,6 @@ class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = "default"
-    base_url: str | None = None
-    api_key_env: str | None = None
-    wire_api: str | None = None
-    headers: dict[str, str] = Field(default_factory=dict)
-    env: dict[str, str] = Field(default_factory=dict)
 
 
 _FANOUT_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -133,7 +128,7 @@ _NODE_DEFAULT_FORBIDDEN_FIELDS = {
     "fanout_member",
     "fanout_dependencies",
 }
-_NODE_DEFAULT_LIST_MERGE_FIELDS = {"extra_args", "skills", "mcps"}
+_NODE_DEFAULT_LIST_MERGE_FIELDS = {"extra_args", "skills"}
 _NODE_DEFAULT_DICT_MERGE_FIELDS = {"env", "provider"}
 
 
@@ -152,15 +147,6 @@ def _merge_bootstrap_shell_init(bootstrap: str, shell_init: Any) -> str | list[s
     return shell_init
 
 
-def _normalized_provider_base_url(value: str | None) -> str | None:
-    if not isinstance(value, str):
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return None
-    return stripped.rstrip("/")
-
-
 def _shell_program(shell: str | None) -> str | None:
     if not isinstance(shell, str) or not shell.strip():
         return None
@@ -171,20 +157,6 @@ def _shell_program(shell: str | None) -> str | None:
     if not parts:
         return None
     return os.path.basename(parts[0]) or None
-
-
-def _normalized_provider_env_text(provider: ProviderConfig, key: str) -> str | None:
-    raw_value = provider.env.get(key)
-    if raw_value is None:
-        return None
-    stripped = str(raw_value).strip()
-    if not stripped:
-        return None
-    return stripped
-
-
-def _normalized_provider_env_base_url(provider: ProviderConfig, key: str) -> str | None:
-    return _normalized_provider_base_url(_normalized_provider_env_text(provider, key))
 
 
 def _coerce_base_dir(value: object) -> Path | None:
@@ -207,18 +179,9 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
 
     alias = value.strip().lower()
     if alias == "openai" and resolved_agent == AgentKind.CODEX:
-        return ProviderConfig(
-            name="openai",
-            base_url="https://api.openai.com/v1",
-            api_key_env="OPENAI_API_KEY",
-            wire_api="responses",
-        )
+        return ProviderConfig(name="openai")
     if alias == "anthropic" and resolved_agent == AgentKind.CLAUDE:
-        return ProviderConfig(
-            name="anthropic",
-            base_url="https://api.anthropic.com",
-            api_key_env="ANTHROPIC_API_KEY",
-        )
+        return ProviderConfig(name="anthropic")
     raise ValueError(f"provider alias `{value}` is not supported")
     return ProviderConfig(name=value)
 
@@ -226,44 +189,6 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
 def resolve_execution_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
     provider = resolve_provider(value, agent)
     return provider
-
-
-class MCPServerSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    transport: Literal["stdio", "streamable_http"] = "stdio"
-    command: str | None = None
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
-    url: str | None = None
-    headers: dict[str, str] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_transport_fields(self) -> "MCPServerSpec":
-        if self.transport == "stdio":
-            if not self.command or not self.command.strip():
-                raise ValueError("stdio MCP servers require `command`")
-            unsupported_fields = []
-            if self.url and self.url.strip():
-                unsupported_fields.append("url")
-            if self.headers:
-                unsupported_fields.append("headers")
-        else:
-            if not self.url or not self.url.strip():
-                raise ValueError("streamable_http MCP servers require `url`")
-            unsupported_fields = []
-            if self.command and self.command.strip():
-                unsupported_fields.append("command")
-            if self.args:
-                unsupported_fields.append("args")
-            if self.env:
-                unsupported_fields.append("env")
-
-        if unsupported_fields:
-            joined = ", ".join(f"`{field}`" for field in unsupported_fields)
-            raise ValueError(f"{self.transport} MCP servers do not support {joined}")
-        return self
 
 
 class LocalTarget(BaseModel):
@@ -636,7 +561,6 @@ class NodeSpec(BaseModel):
     model: str | None = None
     provider: str | ProviderConfig | None = None
     tools: ToolAccess = ToolAccess.READ_ONLY
-    mcps: list[MCPServerSpec] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     target: TargetSpec = Field(default_factory=LocalTarget)
     capture: CaptureMode = CaptureMode.FINAL
@@ -671,9 +595,6 @@ class NodeSpec(BaseModel):
     @model_validator(mode="after")
     def ensure_unique_dependencies(self) -> "NodeSpec":
         self.depends_on = list(dict.fromkeys(self.depends_on))
-        duplicate_mcp_names = sorted(name for name, count in Counter(mcp.name for mcp in self.mcps).items() if count > 1)
-        if duplicate_mcp_names:
-            raise ValueError(f"duplicate MCP server names on node {self.id!r}: {duplicate_mcp_names}")
         if self.schedule is not None:
             if self.fanout_group is not None:
                 raise ValueError("scheduled nodes cannot also use `fanout`")

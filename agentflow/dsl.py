@@ -370,9 +370,8 @@ def pi(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     LMStudio, Ollama). The ``model`` kwarg accepts Pi's ``provider/id[:thinking]``
     syntax (e.g. ``"lmstudio/mythos-26b"`` or ``"anthropic/claude-sonnet-4-6:high"``).
 
-    For an inline, ephemeral provider declaration, pass a full ``ProviderConfig``
-    via ``provider={"name": ..., "base_url": ..., "api_key_env": ..., "wire_api": ...}``
-    and AgentFlow will materialize a scoped ``models.json`` for the run.
+    AgentFlow assumes Pi has already been configured by its own config files.
+    Pass ``provider="name"`` only to select a preconfigured provider by name.
     """
     return _node(AgentKind.PI, task_id=task_id, prompt=prompt, **kwargs)
 

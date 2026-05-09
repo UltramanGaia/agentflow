@@ -1,69 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from agentflow.agents.base import AgentAdapter
 from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.specs import NodeSpec, ProviderConfig, RepoInstructionsMode, ToolAccess
+from agentflow.specs import NodeSpec, RepoInstructionsMode, ToolAccess
 
 
 class CodexAdapter(AgentAdapter):
     _SUPPORTED_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
-
-    def _format_toml_value(self, value: object) -> str:
-        import json
-
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, list):
-            return "[" + ", ".join(self._format_toml_value(item) for item in value) + "]"
-        if isinstance(value, dict):
-            items = ", ".join(f"{key} = {self._format_toml_value(inner)}" for key, inner in value.items())
-            return "{" + items + "}"
-        return json.dumps(str(value), ensure_ascii=False)
-
-    def _render_config(self, node: NodeSpec, provider: ProviderConfig | None, sandbox_mode: str) -> str:
-        lines: list[str] = []
-        if node.model:
-            lines.append(f"model = {self._format_toml_value(node.model)}")
-        lines.append(f"approval_policy = {self._format_toml_value('never')}")
-        lines.append(f"sandbox_mode = {self._format_toml_value(sandbox_mode)}")
-        if provider and (provider.base_url or provider.api_key_env or provider.wire_api):
-            lines.append("")
-            lines.append(f"[model_providers.{provider.name}]")
-            lines.append(f"name = {self._format_toml_value(provider.name)}")
-            if provider.base_url:
-                lines.append(f"base_url = {self._format_toml_value(provider.base_url)}")
-            if provider.api_key_env:
-                lines.append(f"env_key = {self._format_toml_value(provider.api_key_env)}")
-            if provider.wire_api:
-                lines.append(f"wire_api = {self._format_toml_value(provider.wire_api)}")
-        if provider:
-            lines.append("")
-            lines.append("[profiles.agentflow]")
-            if node.model:
-                lines.append(f"model = {self._format_toml_value(node.model)}")
-            lines.append(f"model_provider = {self._format_toml_value(provider.name)}")
-        if node.mcps:
-            for mcp in node.mcps:
-                lines.append("")
-                lines.append(f"[mcp_servers.{mcp.name}]")
-                if mcp.transport == "stdio":
-                    if mcp.command:
-                        lines.append(f"command = {self._format_toml_value(mcp.command)}")
-                    if mcp.args:
-                        lines.append(f"args = {self._format_toml_value(mcp.args)}")
-                    if mcp.env:
-                        lines.append(f"env = {self._format_toml_value(mcp.env)}")
-                else:
-                    if mcp.url:
-                        lines.append(f"url = {self._format_toml_value(mcp.url)}")
-                    if mcp.headers:
-                        lines.append(f"http_headers = {self._format_toml_value(mcp.headers)}")
-        return "\n".join(lines) + "\n"
 
     def _resolve_sandbox_mode(self, node: NodeSpec, env: dict[str, str]) -> str:
         override = (env.pop("AGENTFLOW_CODEX_SANDBOX_MODE", "") or "").strip()
@@ -79,7 +23,7 @@ class CodexAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "codex"
-        env = merge_env_layers(getattr(provider, "env", None), node.env)
+        env = merge_env_layers(node.env)
         sandbox = self._resolve_sandbox_mode(node, env)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
         command = [
@@ -94,33 +38,24 @@ class CodexAdapter(AgentAdapter):
             "--sandbox",
             sandbox,
         ]
-        if node.model and not provider:
+        if node.model:
             command.extend(["--model", node.model])
         if provider:
-            command.extend(["--profile", "agentflow"])
+            command.extend(["--profile", provider.name])
         if repo_instructions_ignored:
             command.extend(["--disable", "plugins"])
             command.extend(["--add-dir", paths.target_workdir])
         command.extend(node.extra_args)
         command.append(prompt)
 
-        runtime_files: dict[str, str] = {}
-        if provider or node.mcps:
-            codex_home = str(Path(paths.target_runtime_dir) / "codex_home")
-            runtime_files[self.relative_runtime_file("codex_home", "config.toml")] = self._render_config(
-                node,
-                provider,
-                sandbox,
-            )
-            env["CODEX_HOME"] = codex_home
-            env["HOME"] = codex_home
         cwd = paths.target_workdir
         if repo_instructions_ignored:
+            from pathlib import Path
+
             cwd = str(Path(paths.target_runtime_dir))
         return PreparedExecution(
             command=command,
             env=env,
             cwd=cwd,
             trace_kind="codex",
-            runtime_files=runtime_files,
         )

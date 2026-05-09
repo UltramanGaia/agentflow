@@ -10,16 +10,6 @@ else
   PYTHON="python3"
 fi
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "missing required environment variable: OPENAI_API_KEY" >&2
-  exit 1
-fi
-
-if [[ -z "${AGENTFLOW_OPENAI_BASE_URL:-}" && -z "${OPENAI_BASE_URL:-}" ]]; then
-  echo "missing required environment variable: AGENTFLOW_OPENAI_BASE_URL or OPENAI_BASE_URL" >&2
-  exit 1
-fi
-
 latest_parent_run() {
   "$PYTHON" - <<'PY'
 import json
