@@ -14,18 +14,13 @@ curl -fsSL https://raw.githubusercontent.com/shouc/agentflow/master/install.sh |
 ```
 
 This installs agentflow, adds it to PATH, and installs the skill for Codex and Claude Code.
+The repository currently ships the CLI, examples, tests, and skills only.
 
 Or manually:
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .[dev]
-```
-
-To build the dashboard (optional, requires Node.js):
-```bash
-make install-ui
-make build-ui
 ```
 
 ## Quick Start
