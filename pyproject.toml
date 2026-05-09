@@ -19,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4.0",
-  "pytest-asyncio>=1.1.0",
 ]
 
 [project.scripts]
@@ -32,5 +31,4 @@ packages = ["agentflow"]
 "examples" = "examples"
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
