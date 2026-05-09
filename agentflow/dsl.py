@@ -9,6 +9,7 @@ import json
 from types import TracebackType
 from typing import Any
 
+from agentflow.pipeline_validation import validate_pipeline_runtime_config
 from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name, prepare_pipeline_payload
 
 
@@ -158,7 +159,7 @@ class Graph:
         return payload
 
     def to_spec(self) -> PipelineSpec:
-        return PipelineSpec.model_validate(prepare_pipeline_payload(self.to_payload()))
+        return validate_pipeline_runtime_config(PipelineSpec.model_validate(prepare_pipeline_payload(self.to_payload())))
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_payload(), indent=indent)

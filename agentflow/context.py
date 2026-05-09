@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from agentflow.skills import compile_skill_prelude
-from agentflow.specs import NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name
+from agentflow.specs import NodeResult, NodeRuntimeState, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name
 from agentflow.utils import render_template
 
 
@@ -26,23 +27,63 @@ def _node_result_context(
     *,
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
+    runtime_state: NodeRuntimeState | None = None,
 ) -> dict[str, Any]:
-    context = {
-        "status": result.status.value,
-        "output": result.output,
-        "final_response": result.final_response,
-        "stdout": "\n".join(result.stdout_lines),
-        "stderr": "\n".join(result.stderr_lines),
-        "trace": [event.model_dump(mode="json") for event in result.trace_events],
-        "diff": getattr(result, "diff", ""),
-    }
+    stdout = "\n".join(runtime_state.stdout_lines) if runtime_state is not None else ""
+    stderr = "\n".join(runtime_state.stderr_lines) if runtime_state is not None else ""
+    trace = (
+        [event.model_dump(mode="json") for event in runtime_state.trace_events]
+        if runtime_state is not None
+        else []
+    )
     if run_id is not None and artifacts_base_dir is not None:
-        context["artifacts"] = _artifact_paths_context(
+        artifacts = _artifact_paths_context(
             run_id=run_id,
             artifacts_base_dir=artifacts_base_dir,
             node_id=result.node_id,
         )
+        stdout = stdout or _read_artifact_text(artifacts["stdout_log"])
+        stderr = stderr or _read_artifact_text(artifacts["stderr_log"])
+        trace = trace or _read_trace_artifact(artifacts["trace_jsonl"])
+    else:
+        artifacts = None
+    context = {
+        "status": result.status.value,
+        "output": result.output,
+        "final_response": result.final_response,
+        "stdout": stdout,
+        "stderr": stderr,
+        "trace": trace,
+        "diff": getattr(result, "diff", ""),
+    }
+    if artifacts is not None:
+        context["artifacts"] = artifacts
     return context
+
+
+def _read_artifact_text(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _read_trace_artifact(path: str) -> list[dict[str, Any]]:
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    trace: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            trace.append(payload)
+    return trace
 
 
 def _fanout_subset_context(member_nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -95,6 +136,7 @@ def _fanout_member_context(
     group_id: str | None,
     pipeline_nodes: dict[str, NodeSpec],
     results: dict[str, NodeResult],
+    runtime_states: dict[str, NodeRuntimeState] | None = None,
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -105,6 +147,7 @@ def _fanout_member_context(
             result,
             run_id=run_id,
             artifacts_base_dir=artifacts_base_dir,
+            runtime_state=(runtime_states or {}).get(member_id),
         ),
     }
     pipeline_node = pipeline_nodes.get(member_id)
@@ -148,6 +191,7 @@ def build_render_context(
     pipeline: PipelineSpec,
     results: dict[str, NodeResult],
     *,
+    runtime_states: dict[str, NodeRuntimeState] | None = None,
     current_node: NodeSpec | None = None,
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
@@ -160,6 +204,7 @@ def build_render_context(
             result,
             run_id=run_id,
             artifacts_base_dir=artifacts_base_dir,
+            runtime_state=(runtime_states or {}).get(node_id),
         )
 
     pipeline_nodes = pipeline.node_map
@@ -172,6 +217,7 @@ def build_render_context(
                 group_id=group_id,
                 pipeline_nodes=pipeline_nodes,
                 results=results,
+                runtime_states=runtime_states,
                 run_id=run_id,
                 artifacts_base_dir=artifacts_base_dir,
             )
@@ -200,6 +246,7 @@ def build_render_context(
                         group_id=None,
                         pipeline_nodes=pipeline_nodes,
                         results=results,
+                        runtime_states=runtime_states,
                         run_id=run_id,
                         artifacts_base_dir=artifacts_base_dir,
                     )
@@ -214,6 +261,7 @@ def render_node_prompt(
     node: NodeSpec,
     results: dict[str, NodeResult],
     *,
+    runtime_states: dict[str, NodeRuntimeState] | None = None,
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
     current_tick_number: int | None = None,
@@ -222,6 +270,7 @@ def render_node_prompt(
     context = build_render_context(
         pipeline,
         results,
+        runtime_states=runtime_states,
         current_node=node,
         run_id=run_id,
         artifacts_base_dir=artifacts_base_dir,

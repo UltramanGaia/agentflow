@@ -24,7 +24,16 @@ from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.prepared import build_execution_paths
 from agentflow.runner import RunnerRegistry, default_runner_registry
-from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name, resolve_provider
+from agentflow.specs import (
+    AgentKind,
+    NodeResult,
+    NodeRuntimeState,
+    NodeSpec,
+    NodeStatus,
+    PipelineSpec,
+    normalize_agent_name,
+    resolve_provider,
+)
 from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, redact_sensitive_shell_value
 
@@ -80,8 +89,9 @@ def _prompt_uses_placeholder_results(prompt: str) -> bool:
     return _INSPECT_PLACEHOLDER_PREFIX in prompt
 
 
-def _build_placeholder_results(pipeline: PipelineSpec) -> dict[str, NodeResult]:
+def _build_placeholder_results(pipeline: PipelineSpec) -> tuple[dict[str, NodeResult], dict[str, NodeRuntimeState]]:
     results: dict[str, NodeResult] = {}
+    runtime_states: dict[str, NodeRuntimeState] = {}
     for node in pipeline.nodes:
         output = _placeholder_text(node.id, "output")
         result = NodeResult(
@@ -89,11 +99,13 @@ def _build_placeholder_results(pipeline: PipelineSpec) -> dict[str, NodeResult]:
             status=NodeStatus.PENDING,
             output=output,
             final_response=_placeholder_text(node.id, "final_response"),
+        )
+        results[node.id] = result
+        runtime_states[node.id] = NodeRuntimeState(
             stdout_lines=[_placeholder_text(node.id, "stdout")],
             stderr_lines=[_placeholder_text(node.id, "stderr")],
         )
-        results[node.id] = result
-    return results
+    return results, runtime_states
 
 
 # Keep non-secret debugging values readable while redacting likely credentials.
@@ -131,9 +143,15 @@ def _render_prompt_for_inspection(
     pipeline: PipelineSpec,
     node: NodeSpec,
     placeholder_results: dict[str, NodeResult],
+    placeholder_runtime_states: dict[str, NodeRuntimeState],
 ) -> tuple[str, str | None]:
     try:
-        return render_node_prompt(pipeline, node, placeholder_results), None
+        return render_node_prompt(
+            pipeline,
+            node,
+            placeholder_results,
+            runtime_states=placeholder_runtime_states,
+        ), None
     except (KeyError, OSError, TemplateError, TypeError, ValueError) as exc:
         return node.prompt, str(exc)
 
@@ -670,7 +688,7 @@ def build_launch_inspection(
     if missing_nodes:
         raise ValueError(f"unknown node ids: {missing_nodes}")
 
-    placeholder_results = _build_placeholder_results(pipeline)
+    placeholder_results, placeholder_runtime_states = _build_placeholder_results(pipeline)
     base_dir = Path(runs_dir).expanduser().resolve()
     inspected_nodes: list[dict[str, Any]] = []
     uses_placeholder_results = False
@@ -679,7 +697,12 @@ def build_launch_inspection(
         if requested_nodes and node.id not in requested_nodes:
             continue
 
-        prompt, render_error = _render_prompt_for_inspection(pipeline, node, placeholder_results)
+        prompt, render_error = _render_prompt_for_inspection(
+            pipeline,
+            node,
+            placeholder_results,
+            placeholder_runtime_states,
+        )
         uses_placeholder_results = uses_placeholder_results or _prompt_uses_placeholder_results(prompt)
         execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
         execution_node = execution_resolution.node

@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from agentflow.pipeline_validation import validate_pipeline_runtime_config
 from agentflow.specs import PipelineSpec, prepare_pipeline_payload
 
 
@@ -58,7 +59,7 @@ def load_pipeline_from_data(data: Any, *, base_dir: str | Path | None = None) ->
         data = prepare_pipeline_payload(data, base_dir=resolved_base_dir)
         if resolved_base_dir is not None:
             data = _resolve_file_relative_paths(data, resolved_base_dir)
-    return PipelineSpec.model_validate(data)
+    return validate_pipeline_runtime_config(PipelineSpec.model_validate(data))
 
 
 def _resolve_base_dir(base_dir: str | Path) -> Path:

@@ -167,9 +167,8 @@ def _preview_text(text: str | None, *, limit: int = 100) -> str | None:
 
 
 def _node_attempt_count(node: NodeResult) -> int:
-    current_attempt = node.current_attempt or 0
     attempts = node.attempts or []
-    return current_attempt or len(attempts)
+    return len(attempts)
 
 
 def _provider_name(value: str | ProviderConfig | None) -> str | None:
@@ -201,14 +200,29 @@ def _node_identity(node_id: str, pipeline_node: NodeSpec | None) -> str:
     return f"{node_id} [{', '.join(parts)}]"
 
 
-def _node_text_candidates(node: NodeResult) -> list[str]:
+def _read_node_artifact_lines(artifact_dir: Path | None, name: str) -> list[str]:
+    if artifact_dir is None:
+        return []
+    try:
+        return (artifact_dir / name).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _node_artifact_dir(run_dir: Path | str | None, node_id: str) -> Path | None:
+    if run_dir is None:
+        return None
+    return Path(run_dir) / "artifacts" / node_id
+
+
+def _node_text_candidates(node: NodeResult, artifact_dir: Path | None = None) -> list[str]:
     candidates: list[str] = []
     for value in (node.final_response, node.output):
         if isinstance(value, str) and value.strip():
             candidates.append(value)
-    for stream_lines in (node.stderr_lines, node.stdout_lines):
-        for line in stream_lines:
-            if isinstance(line, str) and line.strip():
+    for stream_name in ("stderr.log", "stdout.log"):
+        for line in _read_node_artifact_lines(artifact_dir, stream_name):
+            if line.strip():
                 candidates.append(line)
     return candidates
 
@@ -223,8 +237,12 @@ def _provider_error_subject(pipeline_node: NodeSpec | None) -> str:
     return "The agent"
 
 
-def _provider_error_diagnosis(node: NodeResult, pipeline_node: NodeSpec | None) -> str | None:
-    combined = "\n".join(_node_text_candidates(node))
+def _provider_error_diagnosis(
+    node: NodeResult,
+    pipeline_node: NodeSpec | None,
+    artifact_dir: Path | None = None,
+) -> str | None:
+    combined = "\n".join(_node_text_candidates(node, artifact_dir))
     if "API Error:" not in combined:
         return None
 
@@ -242,13 +260,14 @@ def _provider_error_diagnosis(node: NodeResult, pipeline_node: NodeSpec | None) 
     )
 
 
-def _node_preview(node: NodeResult) -> str | None:
+def _node_preview(node: NodeResult, artifact_dir: Path | None = None) -> str | None:
     for candidate in (node.final_response, node.output):
         preview = _preview_text(candidate)
         if preview is not None:
             return preview
-    if node.stderr_lines:
-        return _preview_text(node.stderr_lines[-1])
+    stderr_lines = [line for line in _read_node_artifact_lines(artifact_dir, "stderr.log") if line.strip()]
+    if stderr_lines:
+        return _preview_text(stderr_lines[-1])
     return None
 
 
@@ -277,6 +296,7 @@ def _build_run_summary(record: RunRecord, run_dir: Path | str | None = None) -> 
     pipeline_nodes = _pipeline_node_map(record)
     for node_id, node in record.nodes.items():
         pipeline_node = pipeline_nodes.get(node_id)
+        artifact_dir = _node_artifact_dir(run_dir, node_id)
         node_summary: dict[str, Any] = {
             "id": node_id,
             "status": _status_value(node.status),
@@ -293,10 +313,10 @@ def _build_run_summary(record: RunRecord, run_dir: Path | str | None = None) -> 
             node_summary["attempts"] = attempts
         if node.exit_code is not None:
             node_summary["exit_code"] = node.exit_code
-        preview = _node_preview(node)
+        preview = _node_preview(node, artifact_dir)
         if preview is not None:
             node_summary["preview"] = preview
-        diagnosis = _provider_error_diagnosis(node, pipeline_node)
+        diagnosis = _provider_error_diagnosis(node, pipeline_node, artifact_dir)
         if diagnosis is not None:
             node_summary["diagnosis"] = diagnosis
         nodes.append(node_summary)

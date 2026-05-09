@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import queue
@@ -101,6 +102,9 @@ class RunStore:
         return self.run_dir(run_id) / "cancel.requested"
 
     async def persist_run(self, run_id: str) -> None:
+        await asyncio.to_thread(self._persist_run_sync, run_id)
+
+    def _persist_run_sync(self, run_id: str) -> None:
         record = self._runs[run_id]
         path = self.run_dir(run_id) / "run.json"
 
@@ -124,6 +128,11 @@ class RunStore:
         self._mtimes[run_id] = path.stat().st_mtime
 
     async def append_event(self, run_id: str, event: RunEvent) -> None:
+        await asyncio.to_thread(self._append_event_sync, run_id, event)
+        for subscriber in list(self._subscribers[run_id]):
+            subscriber.put_nowait(event)
+
+    def _append_event_sync(self, run_id: str, event: RunEvent) -> None:
         lock = self._locks[run_id]
         with lock:
             run_dir = self.run_dir(run_id)
@@ -131,10 +140,11 @@ class RunStore:
                 handle.write(event.model_dump_json())
                 handle.write("\n")
             self._events_cache[run_id].append(event)
-        for subscriber in list(self._subscribers[run_id]):
-            subscriber.put_nowait(event)
 
     async def request_cancel(self, run_id: str) -> None:
+        await asyncio.to_thread(self._request_cancel_sync, run_id)
+
+    def _request_cancel_sync(self, run_id: str) -> None:
         lock = self._locks[run_id]
         with lock:
             self.cancel_request_path(run_id).write_text("cancel\n", encoding="utf-8")
@@ -143,11 +153,17 @@ class RunStore:
         return self.cancel_request_path(run_id).exists()
 
     async def clear_cancel_request(self, run_id: str) -> None:
+        await asyncio.to_thread(self._clear_cancel_request_sync, run_id)
+
+    def _clear_cancel_request_sync(self, run_id: str) -> None:
         lock = self._locks[run_id]
         with lock:
             self.cancel_request_path(run_id).unlink(missing_ok=True)
 
     async def append_artifact_text(self, run_id: str, node_id: str, name: str, content: str) -> None:
+        await asyncio.to_thread(self._append_artifact_text_sync, run_id, node_id, name, content)
+
+    def _append_artifact_text_sync(self, run_id: str, node_id: str, name: str, content: str) -> None:
         path = self.artifact_path(run_id, node_id, name)
         lock = self._locks[run_id]
         with lock:
@@ -155,6 +171,9 @@ class RunStore:
                 handle.write(content)
 
     async def write_artifact_text(self, run_id: str, node_id: str, name: str, content: str) -> None:
+        await asyncio.to_thread(self._write_artifact_text_sync, run_id, node_id, name, content)
+
+    def _write_artifact_text_sync(self, run_id: str, node_id: str, name: str, content: str) -> None:
         path = self.artifact_path(run_id, node_id, name)
         lock = self._locks[run_id]
         with lock:

@@ -20,15 +20,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agentflow.local_shell import (
-    invalid_bash_long_option_error,
-    shell_init_commands,
-    shell_wrapper_requires_command_placeholder,
-    target_uses_bash,
-    target_uses_interactive_bash,
-)
-
-
 class AgentKind(StrEnum):
     CODEX = "codex"
     CLAUDE = "claude"
@@ -180,11 +171,6 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
 class LocalTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    _SHELL_COMMAND_PLACEHOLDER_MESSAGE = (
-        "`target.shell` already includes a shell command payload. Add `{command}` where AgentFlow should "
-        "inject the prepared agent command."
-    )
-
     kind: Literal["local"] = "local"
     cwd: str | None = None
     bootstrap: str | None = None
@@ -220,25 +206,19 @@ class LocalTarget(BaseModel):
         return normalized_commands
 
     @model_validator(mode="after")
-    def validate_shell_bootstrap(self) -> "LocalTarget":
+    def validate_shell_options_have_shell(self) -> "LocalTarget":
         if self.shell and self.shell.strip():
-            invalid_option_error = invalid_bash_long_option_error(self.shell)
-            if invalid_option_error is not None:
-                raise ValueError(f"`target.shell` uses an unsupported bash long option. {invalid_option_error}")
-            if shell_wrapper_requires_command_placeholder(self.shell):
-                raise ValueError(self._SHELL_COMMAND_PLACEHOLDER_MESSAGE)
-        else:
-            missing_shell_fields: list[str] = []
-            if self.shell_login:
-                missing_shell_fields.append("shell_login")
-            if self.shell_interactive:
-                missing_shell_fields.append("shell_interactive")
-            if self.shell_init:
-                missing_shell_fields.append("shell_init")
-            if missing_shell_fields:
-                joined = ", ".join(f"`target.{field}`" for field in missing_shell_fields)
-                raise ValueError(f"{joined} require `target.shell` on local targets")
-
+            return self
+        missing_shell_fields: list[str] = []
+        if self.shell_login:
+            missing_shell_fields.append("shell_login")
+        if self.shell_interactive:
+            missing_shell_fields.append("shell_interactive")
+        if self.shell_init:
+            missing_shell_fields.append("shell_init")
+        if missing_shell_fields:
+            joined = ", ".join(f"`target.{field}`" for field in missing_shell_fields)
+            raise ValueError(f"{joined} require `target.shell` on local targets")
         return self
 
 
@@ -1311,8 +1291,37 @@ class NodeAttempt(BaseModel):
     success_details: list[str] = Field(default_factory=list)
 
 
+class NodeRuntimeState(BaseModel):
+    """In-memory execution state that is not persisted into run.json."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stdout_lines: list[str] = Field(default_factory=list)
+    stderr_lines: list[str] = Field(default_factory=list)
+    trace_events: list[NormalizedTraceEvent] = Field(default_factory=list)
+    current_attempt: int = 0
+    last_tick_started_at: str | None = None
+    next_scheduled_at: str | None = None
+
+
 class NodeResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_runtime_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            for key in (
+                "stdout_lines",
+                "stderr_lines",
+                "trace_events",
+                "current_attempt",
+                "last_tick_started_at",
+                "next_scheduled_at",
+            ):
+                data.pop(key, None)
+        return data
 
     node_id: str
     status: NodeStatus = NodeStatus.PENDING
@@ -1321,16 +1330,10 @@ class NodeResult(BaseModel):
     exit_code: int | None = None
     final_response: str | None = None
     output: str | None = None
-    stdout_lines: list[str] = Field(default_factory=list)
-    stderr_lines: list[str] = Field(default_factory=list)
-    trace_events: list[NormalizedTraceEvent] = Field(default_factory=list)
     success: bool | None = None
     success_details: list[str] = Field(default_factory=list)
-    current_attempt: int = 0
     attempts: list[NodeAttempt] = Field(default_factory=list)
     tick_count: int = 0
-    last_tick_started_at: str | None = None
-    next_scheduled_at: str | None = None
     diff: str | None = None
 
 

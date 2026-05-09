@@ -1,8 +1,9 @@
 """Async pipeline orchestration for AgentFlow runs.
 
-Each submitted run is driven in a background thread that owns an asyncio loop for
-scheduling node tasks, persisting state transitions, and reacting to cancellation,
-rerun, and periodic-control signals without blocking other runs.
+Each submitted run is driven in a background thread that owns one asyncio loop.
+Threads provide run-level isolation and concurrency limits; asyncio handles
+per-run node scheduling and streaming. Blocking subprocess or filesystem work
+on async paths should cross the boundary explicitly with ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import json
+import shutil
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -39,9 +41,11 @@ from agentflow.graph_optimizer import (
 from agentflow.loader import load_pipeline_from_path
 from agentflow.prepared import ExecutionPaths, build_execution_paths
 from agentflow.runner import RunnerRegistry, default_runner_registry
+from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX, Scratchboard
 from agentflow.specs import (
     NodeAttempt,
     NodeResult,
+    NodeRuntimeState,
     NodeStatus,
     PeriodicActuationMode,
     PipelineSpec,
@@ -55,6 +59,7 @@ from agentflow.success import evaluate_success
 from agentflow.tuned_agents import _parse_agent_output, _run_optimizer, resolve_node_for_execution
 from agentflow.traces import create_trace_parser
 from agentflow.utils import ensure_dir, looks_sensitive_key, redact_sensitive_shell_value, utcnow_iso
+from agentflow import worktree
 
 
 _TERMINAL_NODE_STATUSES = {
@@ -92,6 +97,24 @@ class _PeriodicNodeRuntimeState:
     last_tick_started_mono: float | None = None
 
 
+async def _run_optimizer_in_thread(
+    optimizer_kind: Any,
+    *,
+    prompt: str,
+    repo_dir: Path,
+    runtime_dir: Path,
+    env: dict[str, str],
+) -> Any:
+    return await asyncio.to_thread(
+        _run_optimizer,
+        optimizer_kind,
+        prompt=prompt,
+        repo_dir=repo_dir,
+        runtime_dir=runtime_dir,
+        env=env,
+    )
+
+
 @dataclass(slots=True)
 class Orchestrator:
     """Coordinate pipeline run lifecycles against the persistent run store.
@@ -111,9 +134,24 @@ class Orchestrator:
     _node_cancel_flags: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
     _pending_node_reruns: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
     _scratchboards: dict[str, "Scratchboard"] = field(default_factory=dict, init=False, repr=False)
+    _node_runtime_states: dict[tuple[str, str], NodeRuntimeState] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._run_slots = threading.Semaphore(self.max_concurrent_runs)
+
+    def _node_runtime_state(self, run_id: str, node_id: str) -> NodeRuntimeState:
+        return self._node_runtime_states.setdefault((run_id, node_id), NodeRuntimeState())
+
+    def _runtime_states_for_run(self, run_id: str) -> dict[str, NodeRuntimeState]:
+        return {
+            node_id: state
+            for (state_run_id, node_id), state in self._node_runtime_states.items()
+            if state_run_id == run_id
+        }
+
+    def _clear_runtime_states_for_run(self, run_id: str) -> None:
+        for key in [key for key in self._node_runtime_states if key[0] == run_id]:
+            self._node_runtime_states.pop(key, None)
 
     @staticmethod
     def _reset_node_for_cycle(record: "RunRecord", node_id: str, remaining: set[str]) -> None:
@@ -201,6 +239,8 @@ class Orchestrator:
         return run
 
     def _start_background(self, run_id: str, entrypoint: Callable[[], Any]) -> None:
+        """Start a run thread; the thread owns the event loop for that run."""
+
         def _background() -> None:
             acquired = False
             try:
@@ -391,7 +431,7 @@ class Orchestrator:
                     attempt_number=attempt_number,
                     max_attempts=GRAPH_OPTIMIZER_MAX_ATTEMPTS,
                 )
-                optimizer_result = _run_optimizer(
+                optimizer_result = await _run_optimizer_in_thread(
                     optimizer_kind,
                     prompt=prompt,
                     repo_dir=round_dir,
@@ -577,8 +617,6 @@ class Orchestrator:
 
         Returns the new queued ``RunRecord``.
         """
-        import shutil
-
         old_record = self.store.get_run(run_id)
         if old_record.status not in {RunStatus.FAILED, RunStatus.CANCELLED}:
             raise ValueError(
@@ -614,7 +652,6 @@ class Orchestrator:
         # Copy scratchboard from old run if it exists
         old_run_dir = self.store.run_dir(run_id)
         new_run_dir = self.store.run_dir(new_run_id)
-        from agentflow.scratchboard import SCRATCHBOARD_FILENAME
         old_sb = old_run_dir / SCRATCHBOARD_FILENAME
         if old_sb.exists():
             shutil.copy2(str(old_sb), str(new_run_dir / SCRATCHBOARD_FILENAME))
@@ -751,7 +788,7 @@ class Orchestrator:
             return
         result.status = NodeStatus.COMPLETED
         result.success = True if result.success is None else result.success
-        result.next_scheduled_at = None
+        self._node_runtime_state(run_id, node_id).next_scheduled_at = None
         result.finished_at = result.finished_at or utcnow_iso()
         await self._publish(
             run_id,
@@ -819,7 +856,7 @@ class Orchestrator:
                 self._pending_node_reruns.setdefault(run_id, set()).add(target_node_id)
                 if target_result.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
                     target_result.status = NodeStatus.PENDING
-                    target_result.next_scheduled_at = None
+                    self._node_runtime_state(run_id, target_node_id).next_scheduled_at = None
                     remaining.add(target_node_id)
                 applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
 
@@ -860,10 +897,15 @@ class Orchestrator:
         pipeline = record.pipeline
         node = pipeline.node_map[node_id]
         result = record.nodes[node_id]
+        runtime_state = self._node_runtime_state(run_id, node_id)
+        runtime_state.stdout_lines = []
+        runtime_state.stderr_lines = []
+        runtime_state.trace_events = []
+        runtime_state.current_attempt = 0
         result.started_at = result.started_at or (periodic_tick_started_at or utcnow_iso())
         if periodic_tick_number is not None:
             result.tick_count = max(result.tick_count, periodic_tick_number)
-            result.last_tick_started_at = periodic_tick_started_at
+            runtime_state.last_tick_started_at = periodic_tick_started_at
         result.status = NodeStatus.RUNNING
         await self._publish(run_id, "node_started", node_id=node_id)
         if periodic_tick_number is not None:
@@ -879,6 +921,7 @@ class Orchestrator:
             pipeline,
             node,
             record.nodes,
+            runtime_states=self._runtime_states_for_run(run_id),
             run_id=run_id,
             artifacts_base_dir=self.store.base_dir,
             current_tick_number=periodic_tick_number,
@@ -890,10 +933,9 @@ class Orchestrator:
         # Create git worktree if enabled (local nodes only get a worktree directory)
         worktree_dir = None
         if pipeline.use_worktree and execution_node.target.kind == "local":
-            from agentflow.worktree import create_worktree, is_git_repo
-            if is_git_repo(pipeline.working_path):
+            if worktree.is_git_repo(pipeline.working_path):
                 try:
-                    worktree_dir = create_worktree(pipeline.working_path, node_id, run_id)
+                    worktree_dir = worktree.create_worktree(pipeline.working_path, node_id, run_id)
                     wt_target = execution_node.target.model_copy(update={"cwd": str(worktree_dir)})
                     execution_node = execution_node.model_copy(update={"target": wt_target})
                 except Exception as exc:
@@ -905,7 +947,6 @@ class Orchestrator:
         # Inject scratchboard file location into prompt
         scratchboard = self._scratchboards.get(run_id)
         if scratchboard is not None:
-            from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX
             sb_path = str(scratchboard.path)
             prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
         adapter = self.adapters.get(runtime_agent)
@@ -922,7 +963,7 @@ class Orchestrator:
             attempt = NodeAttempt(number=attempt_number, status=NodeStatus.RUNNING, started_at=utcnow_iso())
             attempt_stdout_lines: list[str] = []
             attempt_stderr_lines: list[str] = []
-            result.current_attempt = attempt_number
+            runtime_state.current_attempt = attempt_number
             result.attempts.append(attempt)
             parser.start_attempt(attempt_number)
             prepared = adapter.prepare(execution_node, prompt, paths)
@@ -957,14 +998,16 @@ class Orchestrator:
                     parsed_events = parser.feed(line)
                     if parsed_events or parser.supports_raw_stdout_fallback():
                         attempt_stdout_lines.append(line)
+                        runtime_state.stdout_lines = attempt_stdout_lines
                     for event in parsed_events:
-                        result.trace_events.append(event)
+                        runtime_state.trace_events.append(event)
                         await self._publish_trace(run_id, node_id, event)
                 else:
                     attempt_stderr_lines.append(line)
+                    runtime_state.stderr_lines = attempt_stderr_lines
                     await self.store.append_artifact_text(run_id, node_id, "stderr.log", line + "\n")
                     event = parser.emit("stderr", "stderr", line, line, source="stderr")
-                    result.trace_events.append(event)
+                    runtime_state.trace_events.append(event)
                     await self._publish_trace(run_id, node_id, event)
 
             raw = await runner.execute(
@@ -975,8 +1018,8 @@ class Orchestrator:
                 lambda: self._should_cancel(run_id) or self._should_cancel_node(run_id, node_id),
             )
             result.exit_code = raw.exit_code
-            result.stdout_lines = attempt_stdout_lines
-            result.stderr_lines = attempt_stderr_lines
+            runtime_state.stdout_lines = attempt_stdout_lines
+            runtime_state.stderr_lines = attempt_stderr_lines
             result.final_response = parser.finalize()
             if not result.final_response and parser.supports_raw_stdout_fallback():
                 result.final_response = "\n".join(attempt_stdout_lines).strip()
@@ -1082,9 +1125,8 @@ class Orchestrator:
         if pipeline.use_worktree:
             diff = ""
             if worktree_dir is not None:
-                from agentflow.worktree import get_worktree_diff, remove_worktree
                 try:
-                    diff = get_worktree_diff(worktree_dir)
+                    diff = worktree.get_worktree_diff(worktree_dir)
                 except Exception:
                     pass
             if diff:
@@ -1093,9 +1135,8 @@ class Orchestrator:
 
             # Clean up worktree
             if worktree_dir is not None:
-                from agentflow.worktree import remove_worktree
                 try:
-                    remove_worktree(pipeline.working_path, worktree_dir)
+                    worktree.remove_worktree(pipeline.working_path, worktree_dir)
                 except Exception:
                     pass
 
@@ -1133,7 +1174,6 @@ class Orchestrator:
 
         # Create scratchboard if enabled
         if pipeline.scratchboard:
-            from agentflow.scratchboard import Scratchboard, SCRATCHBOARD_FILENAME
             sb_path = self.store.base_dir / run_id / SCRATCHBOARD_FILENAME
             self._scratchboards[run_id] = Scratchboard(sb_path)
 
@@ -1161,9 +1201,10 @@ class Orchestrator:
                 tick_started_at = utcnow_iso()
                 state.last_tick_started_at = tick_started_at
                 state.last_tick_started_mono = loop.time()
+                runtime_state = self._node_runtime_state(run_id, node_id)
                 record.nodes[node_id].tick_count = state.tick_count
-                record.nodes[node_id].last_tick_started_at = tick_started_at
-                record.nodes[node_id].next_scheduled_at = None
+                runtime_state.last_tick_started_at = tick_started_at
+                runtime_state.next_scheduled_at = None
                 return await self._execute_node(
                     run_id,
                     node_id,
@@ -1353,14 +1394,15 @@ class Orchestrator:
                                     state.next_tick_at = state.last_tick_started_mono + node.schedule.every_seconds
                                 seconds_until_next_tick = max(state.next_tick_at - loop.time(), 0.0)
                                 next_tick_at = datetime.now(timezone.utc) + timedelta(seconds=seconds_until_next_tick)
-                                node_result.next_scheduled_at = next_tick_at.isoformat()
+                                runtime_state = self._node_runtime_state(run_id, node_id)
+                                runtime_state.next_scheduled_at = next_tick_at.isoformat()
                                 remaining.add(node_id)
                                 await self._publish(
                                     run_id,
                                     "node_waiting",
                                     node_id=node_id,
                                     tick_count=node_result.tick_count,
-                                    next_scheduled_at=node_result.next_scheduled_at,
+                                    next_scheduled_at=runtime_state.next_scheduled_at,
                                 )
                                 await self.store.persist_run(run_id)
 
@@ -1415,7 +1457,7 @@ class Orchestrator:
                         self._pending_node_reruns[run_id].discard(node_id)
                         record.nodes[node_id].status = NodeStatus.PENDING
                         record.nodes[node_id].finished_at = None
-                        record.nodes[node_id].next_scheduled_at = None
+                        self._node_runtime_state(run_id, node_id).next_scheduled_at = None
                         remaining.add(node_id)
                         await self._publish(run_id, "node_rerun_queued", node_id=node_id)
                         await self.store.persist_run(run_id)
@@ -1436,4 +1478,5 @@ class Orchestrator:
         await self.store.persist_run(run_id)
         self._node_cancel_flags.pop(run_id, None)
         self._pending_node_reruns.pop(run_id, None)
+        self._clear_runtime_states_for_run(run_id)
         return record
