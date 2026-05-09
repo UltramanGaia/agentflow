@@ -22,7 +22,7 @@ from agentflow.specs import (
     normalize_agent_name,
 )
 from agentflow.traces import create_trace_parser
-from agentflow.utils import ensure_dir, json_dumps, redact_sensitive_shell_text, utcnow_iso
+from agentflow.utils import ensure_dir, json_dumps, utcnow_iso
 
 
 _TUNER_CONFIG_DIR = "agent_tuner"
@@ -577,7 +577,7 @@ def _write_attempt_artifact(attempt_dir: Path, name: str, execution: CommandExec
     _write_json(
         attempt_dir / f"{name}.json",
         {
-            "command": redact_sensitive_shell_text(execution.command),
+            "command": execution.command,
             "exit_code": execution.exit_code,
             "stdout": execution.stdout,
             "stderr": execution.stderr,
