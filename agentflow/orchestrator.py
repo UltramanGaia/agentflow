@@ -10,57 +10,30 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-import json
 import shutil
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
-from agentflow.context import render_node_prompt
-from agentflow.graph_optimizer import (
-    GRAPH_OPTIMIZER_MAX_ATTEMPTS,
-    GENERATED_PIPELINE_EDITED_FILENAME,
-    GENERATED_PIPELINE_FILENAME,
-    GENERATED_PIPELINE_ORIGINAL_FILENAME,
-    GRAPH_REPORT_FILENAME,
-    OPTIMIZER_PROMPT_FILENAME,
-    OPTIMIZER_RESULT_FILENAME,
-    OPTIMIZER_VALIDATION_FILENAME,
-    build_graph_report,
-    copy_run_traces,
-    optimizer_failure_summary,
-    render_graph_optimizer_prompt,
-    write_editable_pipeline_python,
-    write_optimizer_result,
-    write_validation_result,
-)
-from agentflow.launch_artifacts import launch_artifact_payload
-from agentflow.loader import load_pipeline_from_path
-from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
-from agentflow.prepared import ExecutionPaths, build_execution_paths
+from agentflow.graph_optimization_session import GraphOptimizationSession
+from agentflow.node_executor import NodeExecutionOutcome, NodeExecutor
+from agentflow.periodic_scheduler import PeriodicScheduler
 from agentflow.runner import RunnerRegistry, default_runner_registry
 from agentflow.scratchboard import SCRATCHBOARD_FILENAME
 from agentflow.scratchboard_manager import ScratchboardManager
 from agentflow.specs import (
-    NodeAttempt,
     NodeResult,
     NodeRuntimeState,
     NodeStatus,
-    PeriodicActuationMode,
     PipelineSpec,
     RunEvent,
     RunRecord,
     RunStatus,
-    builtin_agent_kind,
 )
 from agentflow.store import RunStore
-from agentflow.success import evaluate_success
-from agentflow.tuned_agents import _parse_agent_output, _run_optimizer, resolve_node_for_execution
-from agentflow.traces import create_trace_parser
-from agentflow.utils import ensure_dir, utcnow_iso
+from agentflow.utils import utcnow_iso
 from agentflow.worktree_manager import WorktreeManager
 
 
@@ -73,37 +46,11 @@ _TERMINAL_NODE_STATUSES = {
 
 
 @dataclass(slots=True)
-class _NodeExecutionOutcome:
-    node_id: str
-    periodic_tick_number: int | None = None
-    periodic_actions: PeriodicActionEnvelope | None = None
-    periodic_action_parse_error: str | None = None
-
-
-@dataclass(slots=True)
 class _PeriodicNodeRuntimeState:
     tick_count: int = 0
     next_tick_at: float | None = None
     last_tick_started_at: str | None = None
     last_tick_started_mono: float | None = None
-
-
-async def _run_optimizer_in_thread(
-    optimizer_kind: Any,
-    *,
-    prompt: str,
-    repo_dir: Path,
-    runtime_dir: Path,
-    env: dict[str, str],
-) -> Any:
-    return await asyncio.to_thread(
-        _run_optimizer,
-        optimizer_kind,
-        prompt=prompt,
-        repo_dir=repo_dir,
-        runtime_dir=runtime_dir,
-        env=env,
-    )
 
 
 @dataclass(slots=True)
@@ -187,6 +134,29 @@ class Orchestrator:
             self._node_cancel_flags.pop(run_id, None)
             self._pending_node_reruns.pop(run_id, None)
         self.scratchboards.clear_run(run_id)
+
+    def _periodic_scheduler(self) -> PeriodicScheduler:
+        return PeriodicScheduler(
+            store=self.store,
+            publish=self._publish,
+            node_runtime_state=self._node_runtime_state,
+            request_node_cancel=self._request_node_cancel,
+            queue_node_rerun=self._queue_node_rerun,
+        )
+
+    def _node_executor(self) -> NodeExecutor:
+        return NodeExecutor(
+            store=self.store,
+            adapters=self.adapters,
+            runners=self.runners,
+            worktrees=self.worktrees,
+            scratchboards=self.scratchboards,
+            publish=self._publish,
+            node_runtime_state=self._node_runtime_state,
+            runtime_states_for_run=self._runtime_states_for_run,
+            should_cancel=self._should_cancel,
+            should_cancel_node=self._should_cancel_node,
+        )
 
     @staticmethod
     def _reset_node_for_cycle(record: "RunRecord", node_id: str, remaining: set[str]) -> None:
@@ -293,266 +263,17 @@ class Orchestrator:
 
         threading.Thread(target=_background, name=f"agentflow-{run_id}", daemon=True).start()
 
-    def _graph_optimization_round_dir(self, parent_run_id: str, round_number: int) -> Path:
-        return ensure_dir(self.store.run_dir(parent_run_id) / "optimization" / f"round-{round_number:03d}")
-
-    async def _fail_graph_optimization_session(
-        self,
-        parent_run_id: str,
-        *,
-        error: str,
-        round_number: int,
-        round_dir: Path,
-    ) -> RunRecord:
-        record = self.store.get_run(parent_run_id)
-        record.status = RunStatus.FAILED
-        record.finished_at = utcnow_iso()
-        write_validation_result(round_dir / OPTIMIZER_VALIDATION_FILENAME, ok=False, error=error)
-        await self._publish(
-            parent_run_id,
-            "optimization_failed",
-            round_number=round_number,
-            error=error,
-            round_dir=str(round_dir),
-        )
-        await self._publish(parent_run_id, "run_completed", status=record.status.value)
-        await self.store.clear_cancel_request(parent_run_id)
-        await self.store.persist_run(parent_run_id)
-        self._clear_run_control_state(parent_run_id)
-        return record
-
     async def _run_graph_optimization_session(self, parent_run_id: str) -> RunRecord:
-        parent = self.store.get_run(parent_run_id)
-        optimizer_name = parent.pipeline.optimizer or ""
-        optimizer_kind = builtin_agent_kind(optimizer_name)
-        if optimizer_kind is None:
-            return await self._fail_graph_optimization_session(
-                parent_run_id,
-                error=f"invalid optimizer `{optimizer_name}`",
-                round_number=0,
-                round_dir=self.store.run_dir(parent_run_id),
-            )
-
-        parent.status = RunStatus.RUNNING
-        parent.started_at = utcnow_iso()
-        await self._publish(parent_run_id, "run_started", pipeline=parent.pipeline.model_dump(mode="json"))
-        await self.store.persist_run(parent_run_id)
-
-        optimization_session = dict(parent.optimization_session or {})
-        optimization_session.setdefault("kind", "graph")
-        optimization_session.setdefault("optimizer", optimizer_name)
-        optimization_session.setdefault("total_rounds", parent.pipeline.n_run)
-        optimization_session.setdefault("current_round", 0)
-        optimization_session.setdefault("child_run_ids", [])
-        optimization_session.setdefault("latest_pipeline_path", None)
-        parent.optimization_session = optimization_session
-
-        current_pipeline = parent.pipeline
-        final_child: RunRecord | None = None
-
-        for round_number in range(1, current_pipeline.n_run + 1):
-            if self._should_cancel(parent_run_id):
-                break
-
-            round_dir = self._graph_optimization_round_dir(parent_run_id, round_number)
-            pipeline_path = round_dir / GENERATED_PIPELINE_FILENAME
-            write_editable_pipeline_python(pipeline_path, current_pipeline)
-            write_editable_pipeline_python(round_dir / GENERATED_PIPELINE_ORIGINAL_FILENAME, current_pipeline)
-
-            optimization_session["current_round"] = round_number
-            optimization_session["latest_pipeline_path"] = str(pipeline_path)
-            parent.optimization_session = optimization_session
-            parent.pipeline = current_pipeline
-            await self._publish(
-                parent_run_id,
-                "optimization_round_started",
-                round_number=round_number,
-                total_rounds=current_pipeline.n_run,
-                round_dir=str(round_dir),
-            )
-            await self.store.persist_run(parent_run_id)
-
-            child_pipeline = current_pipeline.model_copy(update={"optimizer": None, "n_run": 1})
-            child = await self._create_queued_run(
-                child_pipeline,
-                cancel_flag=self._run_cancel_flag(parent_run_id),
-                optimization_parent_run_id=parent_run_id,
-                optimization_round=round_number,
-            )
-            optimization_session["child_run_ids"].append(child.id)
-            parent.optimization_session = optimization_session
-            await self._publish(
-                parent_run_id,
-                "optimization_child_run_created",
-                round_number=round_number,
-                child_run_id=child.id,
-            )
-            await self.store.persist_run(parent_run_id)
-
-            try:
-                final_child = await self.run(child.id)
-            finally:
-                self._mark_run_finished(child.id)
-
-            parent.nodes = deepcopy(final_child.nodes)
-            parent.pipeline = current_pipeline
-            await self._publish(
-                parent_run_id,
-                "optimization_round_completed",
-                round_number=round_number,
-                child_run_id=final_child.id,
-                child_status=final_child.status.value,
-            )
-
-            traces_dir = ensure_dir(round_dir / "traces")
-            copied_traces = copy_run_traces(final_child, self.store, traces_dir)
-            graph_report = build_graph_report(
-                parent_run_id=parent_run_id,
-                round_number=round_number,
-                total_rounds=current_pipeline.n_run,
-                run=final_child,
-                store=self.store,
-                copied_traces=copied_traces,
-            )
-            (round_dir / GRAPH_REPORT_FILENAME).write_text(json.dumps(graph_report, ensure_ascii=False, indent=2), encoding="utf-8")
-            await self.store.persist_run(parent_run_id)
-
-            if round_number >= current_pipeline.n_run or self._should_cancel(parent_run_id):
-                continue
-
-            failure_summary: str | None = None
-            loaded_pipeline: PipelineSpec | None = None
-            for attempt_number in range(1, GRAPH_OPTIMIZER_MAX_ATTEMPTS + 1):
-                attempt_dir = ensure_dir(round_dir / "attempts" / f"attempt-{attempt_number:03d}")
-                prompt = render_graph_optimizer_prompt(
-                    optimizer=optimizer_name,
-                    pipeline_path=pipeline_path,
-                    graph_report_path=round_dir / GRAPH_REPORT_FILENAME,
-                    traces_dir=traces_dir,
-                    round_number=round_number,
-                    total_rounds=current_pipeline.n_run,
-                    attempt_number=attempt_number,
-                    max_attempts=GRAPH_OPTIMIZER_MAX_ATTEMPTS,
-                    previous_failure=failure_summary,
-                )
-                (attempt_dir / OPTIMIZER_PROMPT_FILENAME).write_text(prompt, encoding="utf-8")
-                (round_dir / OPTIMIZER_PROMPT_FILENAME).write_text(prompt, encoding="utf-8")
-                await self._publish(
-                    parent_run_id,
-                    "optimization_optimizer_started",
-                    round_number=round_number,
-                    optimizer=optimizer_name,
-                    attempt_number=attempt_number,
-                    max_attempts=GRAPH_OPTIMIZER_MAX_ATTEMPTS,
-                )
-                optimizer_result = await _run_optimizer_in_thread(
-                    optimizer_kind,
-                    prompt=prompt,
-                    repo_dir=round_dir,
-                    runtime_dir=attempt_dir / "optimizer-runtime",
-                    env={},
-                )
-                write_optimizer_result(
-                    attempt_dir / OPTIMIZER_RESULT_FILENAME,
-                    command=optimizer_result.command,
-                    exit_code=optimizer_result.exit_code,
-                    stdout=optimizer_result.stdout,
-                    stderr=optimizer_result.stderr,
-                )
-                write_optimizer_result(
-                    round_dir / OPTIMIZER_RESULT_FILENAME,
-                    command=optimizer_result.command,
-                    exit_code=optimizer_result.exit_code,
-                    stdout=optimizer_result.stdout,
-                    stderr=optimizer_result.stderr,
-                )
-                if pipeline_path.exists():
-                    edited_text = pipeline_path.read_text(encoding="utf-8")
-                    (attempt_dir / GENERATED_PIPELINE_EDITED_FILENAME).write_text(edited_text, encoding="utf-8")
-                    (round_dir / GENERATED_PIPELINE_EDITED_FILENAME).write_text(edited_text, encoding="utf-8")
-                if optimizer_result.exit_code != 0:
-                    failure_summary = optimizer_failure_summary(
-                        "Optimizer",
-                        exit_code=optimizer_result.exit_code,
-                        stdout=optimizer_result.stdout,
-                        stderr=optimizer_result.stderr,
-                    )
-                    write_validation_result(attempt_dir / OPTIMIZER_VALIDATION_FILENAME, ok=False, error=failure_summary)
-                    write_validation_result(round_dir / OPTIMIZER_VALIDATION_FILENAME, ok=False, error=failure_summary)
-                else:
-                    try:
-                        loaded_pipeline = load_pipeline_from_path(pipeline_path)
-                    except Exception as exc:
-                        failure_summary = optimizer_failure_summary(
-                            "Optimized pipeline",
-                            error=f"optimized pipeline failed to load: {exc}",
-                        )
-                        write_validation_result(
-                            attempt_dir / OPTIMIZER_VALIDATION_FILENAME,
-                            ok=False,
-                            error=failure_summary,
-                        )
-                        write_validation_result(
-                            round_dir / OPTIMIZER_VALIDATION_FILENAME,
-                            ok=False,
-                            error=failure_summary,
-                        )
-                    else:
-                        write_validation_result(attempt_dir / OPTIMIZER_VALIDATION_FILENAME, ok=True)
-                        write_validation_result(round_dir / OPTIMIZER_VALIDATION_FILENAME, ok=True)
-                        break
-
-                if attempt_number < GRAPH_OPTIMIZER_MAX_ATTEMPTS:
-                    await self._publish(
-                        parent_run_id,
-                        "optimization_optimizer_retrying",
-                        round_number=round_number,
-                        attempt_number=attempt_number,
-                        error=failure_summary,
-                    )
-
-            if loaded_pipeline is None:
-                return await self._fail_graph_optimization_session(
-                    parent_run_id,
-                    error=failure_summary or "optimizer failed to produce a valid pipeline",
-                    round_number=round_number,
-                    round_dir=round_dir,
-                )
-
-            current_pipeline = loaded_pipeline.model_copy(
-                update={"optimizer": optimizer_name, "n_run": parent.pipeline.n_run}
-            )
-            parent.pipeline = current_pipeline
-            await self._publish(
-                parent_run_id,
-                "optimization_pipeline_accepted",
-                round_number=round_number,
-                attempt_number=attempt_number,
-                optimizer_output=_parse_agent_output(
-                    optimizer_kind,
-                    f"graph_optimizer_{parent_run_id}_{round_number}",
-                    optimizer_result.stdout,
-                ),
-            )
-            await self.store.persist_run(parent_run_id)
-
-        if self._should_cancel(parent_run_id):
-            parent.status = RunStatus.CANCELLED
-        elif final_child is None:
-            parent.status = RunStatus.FAILED
-        elif final_child.status == RunStatus.CANCELLED:
-            parent.status = RunStatus.CANCELLED
-        elif final_child.status == RunStatus.FAILED:
-            parent.status = RunStatus.FAILED
-        else:
-            parent.status = RunStatus.COMPLETED
-
-        parent.finished_at = utcnow_iso()
-        await self._publish(parent_run_id, "run_completed", status=parent.status.value)
-        await self.store.clear_cancel_request(parent_run_id)
-        await self.store.persist_run(parent_run_id)
-        self._clear_run_control_state(parent_run_id)
-        return parent
+        return await GraphOptimizationSession(
+            store=self.store,
+            create_queued_run=self._create_queued_run,
+            run_child=self.run,
+            publish=self._publish,
+            should_cancel=self._should_cancel,
+            run_cancel_flag=self._run_cancel_flag,
+            mark_run_finished=self._mark_run_finished,
+            clear_run_control_state=self._clear_run_control_state,
+        ).run(parent_run_id)
 
     async def submit(self, pipeline: PipelineSpec) -> RunRecord:
         """Create a queued run and start its background scheduler when a slot opens.
@@ -704,137 +425,8 @@ class Orchestrator:
         await self.store.clear_cancel_request(run_id)
         await self.store.persist_run(run_id)
 
-    def _build_paths(self, pipeline: PipelineSpec, run_id: str, node_id: str, node_target: Any) -> ExecutionPaths:
-        return build_execution_paths(
-            base_dir=self.store.base_dir,
-            pipeline_workdir=pipeline.working_path,
-            run_id=run_id,
-            node_id=node_id,
-            node_target=node_target,
-        )
-
     async def _publish(self, run_id: str, event_type: str, *, node_id: str | None = None, **data: Any) -> None:
         await self.store.append_event(run_id, RunEvent(run_id=run_id, type=event_type, node_id=node_id, data=data))
-
-    async def _publish_trace(self, run_id: str, node_id: str, event) -> None:
-        await self.store.append_artifact_text(run_id, node_id, "trace.jsonl", event.model_dump_json() + "\n")
-        await self._publish(run_id, "node_trace", node_id=node_id, trace=event.model_dump(mode="json"))
-
-    async def _write_launch_artifacts(self, run_id: str, node_id: str, attempt_number: int, plan: Any) -> None:
-        payload = launch_artifact_payload(attempt_number, plan)
-        await self.store.write_artifact_json(run_id, node_id, "launch.json", payload)
-        await self.store.write_artifact_json(run_id, node_id, f"launch-attempt-{attempt_number}.json", payload)
-
-    async def _mark_node_cancelled(self, run_id: str, node_id: str, reason: str) -> None:
-        record = self.store.get_run(run_id)
-        result = record.nodes[node_id]
-        result.status = NodeStatus.CANCELLED
-        result.finished_at = utcnow_iso()
-        if reason == "run_cancelled":
-            await self.store.append_artifact_text(run_id, node_id, "stderr.log", "Cancelled by user\n")
-        await self._publish(run_id, "node_cancelled", node_id=node_id, reason=reason)
-
-    def _fanout_group_settled(self, pipeline: PipelineSpec, results: dict[str, NodeResult], group_id: str) -> bool:
-        member_ids = pipeline.fanouts.get(group_id, [])
-        if not member_ids:
-            return True
-        return all(results[member_id].status in _TERMINAL_NODE_STATUSES for member_id in member_ids)
-
-    async def _finalize_periodic_node(self, run_id: str, node_id: str, *, reason: str) -> None:
-        record = self.store.get_run(run_id)
-        result = record.nodes[node_id]
-        if result.status == NodeStatus.COMPLETED:
-            return
-        result.status = NodeStatus.COMPLETED
-        result.success = True if result.success is None else result.success
-        self._node_runtime_state(run_id, node_id).next_scheduled_at = None
-        result.finished_at = result.finished_at or utcnow_iso()
-        await self._publish(
-            run_id,
-            "node_completed",
-            node_id=node_id,
-            tick_count=result.tick_count,
-            reason=reason,
-            output=result.output,
-            final_response=result.final_response,
-            success=result.success,
-            success_details=result.success_details,
-        )
-        await self.store.write_artifact_text(run_id, node_id, "output.txt", result.output or "")
-        await self.store.write_artifact_json(run_id, node_id, "result.json", result.model_dump(mode="json"))
-        await self.store.persist_run(run_id)
-
-    async def _apply_periodic_actions(
-        self,
-        run_id: str,
-        controller_node_id: str,
-        *,
-        watched_group: str,
-        actions: PeriodicActionEnvelope,
-        remaining: set[str],
-        in_progress: dict[str, asyncio.Task["_NodeExecutionOutcome"]],
-    ) -> None:
-        """Apply controller actions emitted by a periodic node to its watched fanout.
-
-        Cancel actions mark running nodes for cooperative stop, while rerun actions
-        either requeue finished nodes immediately or defer rerun until in-flight work
-        reaches a terminal state.
-        """
-
-        if not actions.actions:
-            return
-
-        record = self.store.get_run(run_id)
-        allowed_node_ids = set(record.pipeline.fanouts.get(watched_group, []))
-
-        ordered_actions = sorted(actions.actions, key=lambda item: 0 if item.kind == "cancel" else 1)
-        applied: list[dict[str, Any]] = []
-        rejected: list[dict[str, Any]] = []
-
-        for action in ordered_actions:
-            kind = action.kind.strip().lower()
-            if kind not in {"cancel", "rerun"}:
-                rejected.append({"kind": action.kind, "node_ids": list(action.node_ids), "reason": "unsupported_action"})
-                continue
-            for target_node_id in action.node_ids:
-                if target_node_id not in allowed_node_ids:
-                    rejected.append({"kind": kind, "node_id": target_node_id, "reason": "outside_watched_fanout"})
-                    continue
-                target_result = record.nodes[target_node_id]
-                if kind == "cancel":
-                    if target_result.status not in {NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.RETRYING}:
-                        rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_running"})
-                        continue
-                    self._request_node_cancel(run_id, target_node_id)
-                    applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
-                    continue
-
-                if target_result.status in {NodeStatus.PENDING, NodeStatus.READY}:
-                    rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_started"})
-                    continue
-                self._queue_node_rerun(run_id, target_node_id)
-                if target_result.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
-                    target_result.status = NodeStatus.PENDING
-                    self._node_runtime_state(run_id, target_node_id).next_scheduled_at = None
-                    remaining.add(target_node_id)
-                applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
-
-        if applied:
-            await self._publish(
-                run_id,
-                "node_control_actions_applied",
-                node_id=controller_node_id,
-                watched_group=watched_group,
-                actions=applied,
-            )
-        if rejected:
-            await self._publish(
-                run_id,
-                "node_control_actions_rejected",
-                node_id=controller_node_id,
-                watched_group=watched_group,
-                actions=rejected,
-            )
 
     async def _execute_node(
         self,
@@ -843,246 +435,13 @@ class Orchestrator:
         *,
         periodic_tick_number: int | None = None,
         periodic_tick_started_at: str | None = None,
-    ) -> _NodeExecutionOutcome:
-        """Execute one node from prompt preparation through final persisted result.
-
-        The method renders the prompt, launches the adapter/runner pair, streams
-        traces and artifacts, evaluates success, retries with backoff when needed,
-        and honors run or node cancellation. Periodic ticks also parse optional
-        control actions and return them to the scheduler.
-        """
-
-        record = self.store.get_run(run_id)
-        pipeline = record.pipeline
-        node = pipeline.node_map[node_id]
-        result = record.nodes[node_id]
-        runtime_state = self._node_runtime_state(run_id, node_id)
-        runtime_state.stdout_lines = []
-        runtime_state.stderr_lines = []
-        runtime_state.trace_events = []
-        runtime_state.current_attempt = 0
-        result.started_at = result.started_at or (periodic_tick_started_at or utcnow_iso())
-        if periodic_tick_number is not None:
-            result.tick_count = max(result.tick_count, periodic_tick_number)
-            runtime_state.last_tick_started_at = periodic_tick_started_at
-        result.status = NodeStatus.RUNNING
-        await self._publish(run_id, "node_started", node_id=node_id)
-        if periodic_tick_number is not None:
-            await self._publish(
-                run_id,
-                "node_tick_started",
-                node_id=node_id,
-                tick_number=periodic_tick_number,
-                tick_started_at=periodic_tick_started_at,
-            )
-
-        prompt = render_node_prompt(
-            pipeline,
-            node,
-            record.nodes,
-            runtime_states=self._runtime_states_for_run(run_id),
-            run_id=run_id,
-            artifacts_base_dir=self.store.base_dir,
-            current_tick_number=periodic_tick_number,
-            current_tick_started_at=periodic_tick_started_at,
+    ) -> NodeExecutionOutcome:
+        return await self._node_executor().execute(
+            run_id,
+            node_id,
+            periodic_tick_number=periodic_tick_number,
+            periodic_tick_started_at=periodic_tick_started_at,
         )
-        execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
-        execution_node = execution_resolution.node
-        runtime_agent = execution_resolution.runtime_agent
-        prepared_worktree = self.worktrees.prepare_node(pipeline, execution_node, run_id=run_id)
-        execution_node = prepared_worktree.node
-        if prepared_worktree.warning is not None:
-            await self._publish(
-                run_id,
-                "node_trace",
-                node_id=node_id,
-                trace={"kind": "warning", "title": prepared_worktree.warning},
-            )
-
-        paths = self._build_paths(pipeline, run_id, node_id, execution_node.target)
-
-        prompt += self.scratchboards.prompt_suffix_for_run(run_id)
-        adapter = self.adapters.get(runtime_agent)
-        runner = self.runners.get(execution_node.target.kind)
-        parser = create_trace_parser(runtime_agent, node.id)
-        periodic_actions: PeriodicActionEnvelope | None = None
-        periodic_action_parse_error: str | None = None
-
-        for attempt_number in range(1, node.retries + 2):
-            if self._should_cancel(run_id):
-                await self._mark_node_cancelled(run_id, node_id, "run_cancelled")
-                return _NodeExecutionOutcome(node_id=node_id, periodic_tick_number=periodic_tick_number)
-
-            attempt = NodeAttempt(number=attempt_number, status=NodeStatus.RUNNING, started_at=utcnow_iso())
-            attempt_stdout_lines: list[str] = []
-            attempt_stderr_lines: list[str] = []
-            runtime_state.current_attempt = attempt_number
-            result.attempts.append(attempt)
-            parser.start_attempt(attempt_number)
-            prepared = adapter.prepare(execution_node, prompt, paths)
-            plan = runner.plan_execution(execution_node, prepared, paths)
-            await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
-            await self.store.append_artifact_text(
-                run_id,
-                node_id,
-                "stdout.log",
-                f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
-            )
-            await self.store.append_artifact_text(
-                run_id,
-                node_id,
-                "stderr.log",
-                f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
-            )
-            if attempt_number > 1:
-                result.status = NodeStatus.RETRYING
-                await self._publish(
-                    run_id,
-                    "node_retrying",
-                    node_id=node_id,
-                    attempt=attempt_number,
-                    max_attempts=node.retries + 1,
-                )
-                result.status = NodeStatus.RUNNING
-
-            async def on_output(stream_name: str, line: str) -> None:
-                if stream_name == "stdout":
-                    await self.store.append_artifact_text(run_id, node_id, "stdout.log", line + "\n")
-                    parsed_events = parser.feed(line)
-                    if parsed_events or parser.supports_raw_stdout_fallback():
-                        attempt_stdout_lines.append(line)
-                        runtime_state.stdout_lines = attempt_stdout_lines
-                    for event in parsed_events:
-                        runtime_state.trace_events.append(event)
-                        await self._publish_trace(run_id, node_id, event)
-                else:
-                    attempt_stderr_lines.append(line)
-                    runtime_state.stderr_lines = attempt_stderr_lines
-                    await self.store.append_artifact_text(run_id, node_id, "stderr.log", line + "\n")
-                    event = parser.emit("stderr", "stderr", line, line, source="stderr")
-                    runtime_state.trace_events.append(event)
-                    await self._publish_trace(run_id, node_id, event)
-
-            raw = await runner.execute(
-                execution_node,
-                prepared,
-                paths,
-                on_output,
-                lambda: self._should_cancel(run_id) or self._should_cancel_node(run_id, node_id),
-            )
-            result.exit_code = raw.exit_code
-            runtime_state.stdout_lines = attempt_stdout_lines
-            runtime_state.stderr_lines = attempt_stderr_lines
-            result.final_response = parser.finalize()
-            if not result.final_response and parser.supports_raw_stdout_fallback():
-                result.final_response = "\n".join(attempt_stdout_lines).strip()
-            result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
-            success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
-            result.success = success_ok
-            result.success_details = success_details
-            attempt.finished_at = utcnow_iso()
-            attempt.exit_code = raw.exit_code
-            attempt.final_response = result.final_response
-            attempt.output = result.output
-            attempt.success = success_ok
-            attempt.success_details = success_details
-
-            if raw.cancelled or self._should_cancel(run_id):
-                attempt.status = NodeStatus.CANCELLED
-                result.status = NodeStatus.CANCELLED
-                result.finished_at = attempt.finished_at
-                await self._publish(
-                    run_id,
-                    "node_cancelled",
-                    node_id=node_id,
-                    attempt=attempt_number,
-                    exit_code=raw.exit_code,
-                )
-                break
-
-            if raw.exit_code == 0 and success_ok:
-                attempt.status = NodeStatus.COMPLETED
-                result.status = NodeStatus.READY if periodic_tick_number is not None else NodeStatus.COMPLETED
-                result.finished_at = attempt.finished_at
-                if periodic_tick_number is not None:
-                    if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
-                        periodic_actions, periodic_action_parse_error = parse_periodic_actions(result.final_response)
-                        if periodic_actions is not None and periodic_actions.analysis is not None:
-                            result.output = periodic_actions.analysis
-                            attempt.output = result.output
-                    await self._publish(
-                        run_id,
-                        "node_tick_completed",
-                        node_id=node_id,
-                        tick_number=periodic_tick_number,
-                        attempt=attempt_number,
-                        exit_code=result.exit_code,
-                        success=result.success,
-                        output=result.output,
-                        final_response=result.final_response,
-                        success_details=result.success_details,
-                    )
-                else:
-                    await self._publish(
-                        run_id,
-                        "node_completed",
-                        node_id=node_id,
-                        attempt=attempt_number,
-                        exit_code=result.exit_code,
-                        success=result.success,
-                        output=result.output,
-                        final_response=result.final_response,
-                        success_details=result.success_details,
-                    )
-                break
-
-            attempt.status = NodeStatus.FAILED
-            result.status = NodeStatus.FAILED
-            result.finished_at = attempt.finished_at
-            await self._publish(
-                run_id,
-                "node_failed",
-                node_id=node_id,
-                attempt=attempt_number,
-                exit_code=result.exit_code,
-                success=result.success,
-                output=result.output,
-                final_response=result.final_response,
-                success_details=result.success_details,
-            )
-            if attempt_number <= node.retries:
-                if getattr(node, "retry_backoff_strategy", "exponential") == "exponential":
-                    delay = min(
-                        node.retry_backoff_seconds * (2 ** (attempt_number - 1)),
-                        getattr(node, "retry_backoff_max_seconds", 300.0),
-                    )
-                else:
-                    delay = node.retry_backoff_seconds * attempt_number
-                await asyncio.sleep(max(delay, 0.0))
-                continue
-            break
-
-        await self.store.write_artifact_text(run_id, node_id, "output.txt", result.output or "")
-        await self.store.write_artifact_json(run_id, node_id, "result.json", result.model_dump(mode="json"))
-
-        await self.scratchboards.merge_output(run_id, node_id, result.output)
-
-        # Capture diff from local worktree.
-        if pipeline.use_worktree:
-            diff = self.worktrees.capture_diff_and_cleanup(prepared_worktree.lease)
-            if diff:
-                await self.store.write_artifact_text(run_id, node_id, "diff.patch", diff)
-            result.diff = diff
-
-        await self.store.persist_run(run_id)
-        if periodic_tick_number is not None:
-            return _NodeExecutionOutcome(
-                node_id=node_id,
-                periodic_tick_number=periodic_tick_number,
-                periodic_actions=periodic_actions,
-                periodic_action_parse_error=periodic_action_parse_error,
-            )
-        return _NodeExecutionOutcome(node_id=node_id)
 
     async def run(self, run_id: str) -> RunRecord:
         """Drive a run until all nodes reach terminal outcomes.
@@ -1115,16 +474,17 @@ class Orchestrator:
             node_id for node_id in node_map
             if record.nodes[node_id].status not in {NodeStatus.COMPLETED}
         }
-        in_progress: dict[str, asyncio.Task[_NodeExecutionOutcome]] = {}
+        in_progress: dict[str, asyncio.Task[NodeExecutionOutcome]] = {}
         semaphore = asyncio.Semaphore(pipeline.concurrency)
         loop = asyncio.get_running_loop()
+        periodic_scheduler = self._periodic_scheduler()
         periodic_state = {
             node_id: _PeriodicNodeRuntimeState()
             for node_id, node in node_map.items()
             if node.schedule is not None
         }
 
-        async def launch(node_id: str) -> _NodeExecutionOutcome:
+        async def launch(node_id: str) -> NodeExecutionOutcome:
             async with semaphore:
                 node = node_map[node_id]
                 if node.schedule is None:
@@ -1228,14 +588,14 @@ class Orchestrator:
                     continue
                 if any(record.nodes[dependency].status != NodeStatus.COMPLETED for dependency in node.depends_on):
                     continue
-                if not self._fanout_group_settled(
+                if not periodic_scheduler.fanout_group_settled(
                     pipeline,
                     record.nodes,
                     node.schedule.until_fanout_settles_from,
                 ):
                     continue
                 remaining.remove(node_id)
-                await self._finalize_periodic_node(run_id, node_id, reason="watched_group_settled")
+                await periodic_scheduler.finalize_node(run_id, node_id, reason="watched_group_settled")
 
             now = loop.time()
             ready: list[str] = []
@@ -1302,7 +662,7 @@ class Orchestrator:
                             )
 
                         if outcome.periodic_actions is not None:
-                            await self._apply_periodic_actions(
+                            await periodic_scheduler.apply_actions(
                                 run_id,
                                 node_id,
                                 watched_group=node.schedule.until_fanout_settles_from,
@@ -1313,12 +673,12 @@ class Orchestrator:
 
                         node_result = record.nodes[node_id]
                         if node_result.status == NodeStatus.READY and not self._should_cancel(run_id):
-                            if self._fanout_group_settled(
+                            if periodic_scheduler.fanout_group_settled(
                                 pipeline,
                                 record.nodes,
                                 node.schedule.until_fanout_settles_from,
                             ):
-                                await self._finalize_periodic_node(run_id, node_id, reason="watched_group_settled")
+                                await periodic_scheduler.finalize_node(run_id, node_id, reason="watched_group_settled")
                             else:
                                 state = periodic_state[node_id]
                                 if state.last_tick_started_mono is None:

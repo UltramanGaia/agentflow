@@ -4,9 +4,9 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable
 
-import agentflow.orchestrator as orchestrator_module
+import agentflow.graph_optimization_session as graph_optimization_session_module
 import agentflow.store as store_module
-from agentflow.orchestrator import _run_optimizer_in_thread
+from agentflow.graph_optimization_session import run_optimizer_in_thread
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunEvent, RunRecord, RunStatus
 from agentflow.store import RunStore
 
@@ -70,11 +70,11 @@ def test_graph_optimizer_runs_through_thread_boundary(tmp_path: Path, monkeypatc
         calls.append(func.__name__)
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(orchestrator_module, "_run_optimizer", fake_run_optimizer)
-    monkeypatch.setattr(orchestrator_module.asyncio, "to_thread", capturing_to_thread)
+    monkeypatch.setattr(graph_optimization_session_module, "_run_optimizer", fake_run_optimizer)
+    monkeypatch.setattr(graph_optimization_session_module.asyncio, "to_thread", capturing_to_thread)
 
     result = asyncio.run(
-        _run_optimizer_in_thread(
+        run_optimizer_in_thread(
             AgentKind.CODEX,
             prompt="optimize",
             repo_dir=tmp_path,
