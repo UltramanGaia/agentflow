@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from agentflow.local_shell import invalid_bash_long_option_error, shell_wrapper_requires_command_placeholder
-from agentflow.specs import LocalTarget, PipelineSpec
+from agentflow.specs_core import LocalTarget
+from agentflow.specs_models import PipelineSpec
 
 
 _SHELL_COMMAND_PLACEHOLDER_MESSAGE = (

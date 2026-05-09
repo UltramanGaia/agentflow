@@ -24,9 +24,10 @@ _TERMINAL_RUN_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCE
 class RunStore:
     """In-memory run registry with filesystem persistence.
 
-    The in-memory ``_runs`` map is the source of truth while this process is
-    active. ``run.json`` and ``events.jsonl`` are loaded during initialization
-    and written after mutations; reads do not rescan the filesystem.
+    The in-memory ``_runs`` map is the runtime source of truth while this
+    process is active. ``run.json`` and ``events.jsonl`` are loaded during
+    initialization and written after mutations; live reads do not reconcile
+    against disk.
     """
 
     def __init__(self, base_dir: str | Path = ".agentflow/runs") -> None:
@@ -36,57 +37,39 @@ class RunStore:
         self._registry_lock = threading.RLock()
         self._subscribers: defaultdict[str, set[queue.Queue[RunEvent]]] = defaultdict(set)
         self._events_cache: defaultdict[str, list[RunEvent]] = defaultdict(list)
-        self._mtimes: dict[str, float] = {}
-        self._sync_runs()
+        self._load_existing_runs()
 
-    def _sync_runs(self) -> None:
-        """Synchronize in-memory cache with the filesystem."""
+    def _load_existing_runs(self) -> None:
+        """Hydrate the in-memory cache from persisted runs at startup."""
         try:
             run_files = list(self.base_dir.glob("*/run.json"))
             for run_file in sorted(run_files):
                 run_id = run_file.parent.name
                 try:
-                    mtime = run_file.stat().st_mtime
-                    if run_id not in self._runs or self._mtimes.get(run_id, 0) < mtime:
-                        content = run_file.read_text(encoding="utf-8")
-                        if not content.strip():
-                            continue
+                    content = run_file.read_text(encoding="utf-8")
+                    if not content.strip():
+                        continue
 
-                        run = RunRecord.model_validate_json(content)
-                        existing = self._runs.get(run_id)
-                        if (
-                            existing is not None
-                            and existing.status not in _TERMINAL_RUN_STATUSES
-                            and run.status not in _TERMINAL_RUN_STATUSES
-                        ):
-                            self._mtimes[run_id] = mtime
-                            continue
-                        # Only update if status changed or it's new
-                        if run_id not in self._runs or self._runs[run_id].status != run.status:
-                            sync_logger.debug(f"Syncing run {run_id}: status {run.status}")
+                    run = RunRecord.model_validate_json(content)
+                    sync_logger.debug(f"Loaded run {run_id}: status {run.status}")
 
+                    with self._registry_lock:
+                        self._runs[run_id] = run
+
+                    events_path = run_file.parent / "events.jsonl"
+                    if events_path.exists():
+                        events = [
+                            RunEvent.model_validate_json(line)
+                            for line in events_path.read_text(encoding="utf-8").splitlines()
+                            if line.strip()
+                        ]
                         with self._registry_lock:
-                            self._runs[run_id] = run
-                            self._mtimes[run_id] = mtime
-
-                        # Sync events
-                        events_path = run_file.parent / "events.jsonl"
-                        if events_path.exists():
-                           event_mtime = events_path.stat().st_mtime
-                           if self._mtimes.get(f"{run_id}_events", 0) < event_mtime:
-                                events = [
-                                    RunEvent.model_validate_json(line)
-                                    for line in events_path.read_text(encoding="utf-8").splitlines()
-                                    if line.strip()
-                                ]
-                                with self._registry_lock:
-                                    self._events_cache[run_id] = events
-                                    self._mtimes[f"{run_id}_events"] = event_mtime
+                            self._events_cache[run_id] = events
                 except (OSError, ValidationError, json.JSONDecodeError, KeyError) as e:
-                    sync_logger.error(f"Failed to sync {run_id}: {e}")
+                    sync_logger.error(f"Failed to load {run_id}: {e}")
                     continue
         except OSError as e:
-            sync_logger.error(f"Sync error: {e}")
+            sync_logger.error(f"Load error: {e}")
             pass
 
     async def create_run(self, record: RunRecord | None = None) -> RunRecord:
@@ -123,8 +106,6 @@ class RunStore:
                 payload = record.model_dump_json(indent=2)
             path = self.run_dir(run_id) / "run.json"
             path.write_text(payload, encoding="utf-8")
-            with self._registry_lock:
-                self._mtimes[run_id] = path.stat().st_mtime
 
     async def append_event(self, run_id: str, event: RunEvent) -> None:
         await asyncio.to_thread(self._append_event_sync, run_id, event)

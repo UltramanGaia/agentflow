@@ -23,17 +23,11 @@ from agentflow.local_shell import (
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.prepared import build_execution_paths
+from agentflow.provider import resolve_provider
+from agentflow.runtime_state import NodeRuntimeState
 from agentflow.runner import RunnerRegistry, default_runner_registry
-from agentflow.specs import (
-    AgentKind,
-    NodeResult,
-    NodeRuntimeState,
-    NodeSpec,
-    NodeStatus,
-    PipelineSpec,
-    normalize_agent_name,
-    resolve_provider,
-)
+from agentflow.specs_core import AgentKind, NodeStatus, normalize_agent_name
+from agentflow.specs_models import NodeResult, NodeSpec, PipelineSpec
 from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, redact_sensitive_shell_value
 

@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.specs import AgentKind, NodeSpec, ProviderConfig, resolve_provider
+from agentflow.provider import resolve_provider
+from agentflow.specs_core import AgentKind, ProviderConfig
+from agentflow.specs_models import NodeSpec
 
 
 class AgentAdapter(ABC):

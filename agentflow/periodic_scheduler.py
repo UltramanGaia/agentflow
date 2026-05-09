@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from agentflow.periodic import PeriodicActionEnvelope
-from agentflow.specs import NodeResult, NodeRuntimeState, NodeStatus, PipelineSpec
+from agentflow.runtime_state import NodeRuntimeState
+from agentflow.specs import NodeResult, NodeStatus, PipelineSpec
 from agentflow.store import RunStore
 from agentflow.utils import utcnow_iso
 

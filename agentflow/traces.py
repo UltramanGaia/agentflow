@@ -4,7 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from agentflow.specs import AgentKind, NormalizedTraceEvent
+from agentflow.specs_core import AgentKind
+from agentflow.specs_models import NormalizedTraceEvent
 
 
 def _json(line: str) -> Any | None:

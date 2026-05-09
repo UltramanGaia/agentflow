@@ -6,7 +6,8 @@ from typing import Any
 
 from agentflow.periodic import PeriodicActionEnvelope
 from agentflow.periodic_scheduler import PeriodicScheduler
-from agentflow.specs import AgentKind, NodeResult, NodeRuntimeState, NodeSpec, NodeStatus, PipelineSpec, RunRecord
+from agentflow.runtime_state import NodeRuntimeState
+from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunRecord
 from agentflow.store import RunStore
 
 

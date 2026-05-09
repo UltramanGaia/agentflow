@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from agentflow.skills import compile_skill_prelude
-from agentflow.specs import NodeResult, NodeRuntimeState, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name
+from agentflow.runtime_state import NodeRuntimeState
+from agentflow.specs_core import NodeStatus, normalize_agent_name
+from agentflow.specs_models import NodeResult, NodeSpec, PipelineSpec
 from agentflow.utils import render_template
 
 

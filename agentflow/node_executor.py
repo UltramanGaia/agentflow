@@ -9,14 +9,11 @@ from agentflow.context import render_node_prompt
 from agentflow.launch_artifacts import launch_artifact_payload
 from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
 from agentflow.prepared import ExecutionPaths, build_execution_paths
+from agentflow.runtime_state import NodeRuntimeState
 from agentflow.runner import RunnerRegistry
 from agentflow.scratchboard_manager import ScratchboardManager
-from agentflow.specs import (
-    NodeAttempt,
-    NodeRuntimeState,
-    NodeStatus,
-    PeriodicActuationMode,
-)
+from agentflow.specs_core import NodeStatus, PeriodicActuationMode
+from agentflow.specs_models import NodeAttempt
 from agentflow.store import RunStore
 from agentflow.success import evaluate_success
 from agentflow.tuned_agents import resolve_node_for_execution

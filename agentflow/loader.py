@@ -9,7 +9,8 @@ from typing import Any
 import yaml
 
 from agentflow.pipeline_validation import validate_pipeline_runtime_config
-from agentflow.specs import PipelineSpec, prepare_pipeline_payload
+from agentflow.pipeline_defaults import prepare_pipeline_payload
+from agentflow.specs_models import PipelineSpec
 
 
 def load_pipeline_from_path(path: str | Path) -> PipelineSpec:

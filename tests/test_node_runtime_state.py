@@ -7,6 +7,7 @@ from pathlib import Path
 from agentflow.agents.base import AgentAdapter
 from agentflow.orchestrator import Orchestrator
 from agentflow.prepared import ExecutionPaths, PreparedExecution
+from agentflow.runtime_state import NodeRuntimeState
 from agentflow.runner import LaunchPlan, RawExecutionResult, Runner
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunRecord, RunStatus
 from agentflow.store import RunStore

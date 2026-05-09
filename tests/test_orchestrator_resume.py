@@ -39,4 +39,4 @@ def test_resume_reuses_start_background(tmp_path: Path, monkeypatch: pytest.Monk
 
     assert started["run_id"] == new_run.id
     assert callable(started["entrypoint"])
-    assert new_run.id in orchestrator._run_finished
+    assert orchestrator._run_state.run_finished_event(new_run.id) is not None
