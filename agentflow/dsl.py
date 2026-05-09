@@ -9,7 +9,7 @@ import json
 from types import TracebackType
 from typing import Any
 
-from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name
+from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name, prepare_pipeline_payload
 
 
 _CURRENT_GRAPH: ContextVar["Graph | None"] = ContextVar("_CURRENT_GRAPH", default=None)
@@ -158,7 +158,7 @@ class Graph:
         return payload
 
     def to_spec(self) -> PipelineSpec:
-        return PipelineSpec.model_validate(self.to_payload())
+        return PipelineSpec.model_validate(prepare_pipeline_payload(self.to_payload()))
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_payload(), indent=indent)

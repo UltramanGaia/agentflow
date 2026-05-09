@@ -24,7 +24,7 @@ from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.prepared import build_execution_paths
 from agentflow.runner import RunnerRegistry, default_runner_registry
-from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name, resolve_execution_provider
+from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name, resolve_provider
 from agentflow.tuned_agents import resolve_node_for_execution
 from agentflow.utils import looks_sensitive_key, redact_sensitive_shell_text, redact_sensitive_shell_value
 
@@ -683,7 +683,7 @@ def build_launch_inspection(
         uses_placeholder_results = uses_placeholder_results or _prompt_uses_placeholder_results(prompt)
         execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
         execution_node = execution_resolution.node
-        resolved_provider = resolve_execution_provider(execution_node.provider, execution_node.agent)
+        resolved_provider = resolve_provider(execution_node.provider, execution_node.agent)
         paths = build_execution_paths(
             base_dir=base_dir,
             pipeline_workdir=pipeline.working_path,

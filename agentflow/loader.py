@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from agentflow.specs import PipelineSpec, expand_compact_nodes
+from agentflow.specs import PipelineSpec, prepare_pipeline_payload
 
 
 def load_pipeline_from_path(path: str | Path) -> PipelineSpec:
@@ -53,11 +53,11 @@ def load_pipeline_from_text(
 
 
 def load_pipeline_from_data(data: Any, *, base_dir: str | Path | None = None) -> PipelineSpec:
-    if isinstance(data, dict) and base_dir is not None:
-        resolved_base_dir = _resolve_base_dir(base_dir)
-        data = expand_compact_nodes(data, base_dir=resolved_base_dir)
-        data = _resolve_file_relative_paths(data, resolved_base_dir)
-        data = {**data, "base_dir": str(resolved_base_dir)}
+    if isinstance(data, dict):
+        resolved_base_dir = _resolve_base_dir(base_dir) if base_dir is not None else None
+        data = prepare_pipeline_payload(data, base_dir=resolved_base_dir)
+        if resolved_base_dir is not None:
+            data = _resolve_file_relative_paths(data, resolved_base_dir)
     return PipelineSpec.model_validate(data)
 
 

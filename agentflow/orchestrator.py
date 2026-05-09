@@ -633,21 +633,7 @@ class Orchestrator:
         await self._publish(new_run_id, "run_queued", pipeline=pipeline.model_dump(mode="json"),
                             resumed_from=run_id)
 
-        def _background() -> None:
-            acquired = False
-            try:
-                while not acquired:
-                    if self._should_cancel(new_run_id):
-                        asyncio.run(self._finalize_cancelled_queue_run(new_run_id))
-                        return
-                    acquired = self._run_slots.acquire(timeout=0.1)
-                asyncio.run(self.run(new_run_id))
-            finally:
-                if acquired:
-                    self._run_slots.release()
-                self._run_finished[new_run_id].set()
-
-        threading.Thread(target=_background, name=f"agentflow-{new_run_id}", daemon=True).start()
+        self._start_background(new_run_id, lambda: self.run(new_run_id))
         return new_run
 
     def _should_cancel(self, run_id: str) -> bool:

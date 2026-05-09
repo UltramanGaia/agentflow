@@ -139,14 +139,6 @@ def _normalize_local_bootstrap(value: object) -> str | None:
     return normalized or None
 
 
-def _local_bootstrap_defaults(bootstrap: str) -> dict[str, Any]:
-    return {}
-
-
-def _merge_bootstrap_shell_init(bootstrap: str, shell_init: Any) -> str | list[str] | None:
-    return shell_init
-
-
 def _shell_program(shell: str | None) -> str | None:
     if not isinstance(shell, str) or not shell.strip():
         return None
@@ -183,12 +175,6 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
     if alias == "anthropic" and resolved_agent == AgentKind.CLAUDE:
         return ProviderConfig(name="anthropic")
     raise ValueError(f"provider alias `{value}` is not supported")
-    return ProviderConfig(name=value)
-
-
-def resolve_execution_provider(value: str | ProviderConfig | None, agent: str | AgentKind) -> ProviderConfig | None:
-    provider = resolve_provider(value, agent)
-    return provider
 
 
 class LocalTarget(BaseModel):
@@ -206,25 +192,6 @@ class LocalTarget(BaseModel):
     shell_login: bool = False
     shell_interactive: bool = False
     shell_init: str | list[str] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def apply_bootstrap_defaults(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        bootstrap = _normalize_local_bootstrap(data.get("bootstrap"))
-        if bootstrap is None:
-            return data
-
-        updated = dict(data)
-        for key, value in _local_bootstrap_defaults(bootstrap).items():
-            if key == "shell_init":
-                updated[key] = _merge_bootstrap_shell_init(bootstrap, updated.get(key))
-                continue
-            if key not in updated or updated[key] is None:
-                updated[key] = value
-        return updated
 
     @field_validator("bootstrap")
     @classmethod
@@ -1218,6 +1185,14 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def prepare_pipeline_payload(payload: dict[str, Any], *, base_dir: str | Path | None = None) -> dict[str, Any]:
+    """Apply source-level pipeline transformations before model validation."""
+
+    expanded = expand_compact_nodes(payload, base_dir=base_dir)
+    expanded = apply_node_defaults(expanded)
+    return apply_local_target_defaults(expanded)
+
+
 class PipelineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1236,17 +1211,6 @@ class PipelineSpec(BaseModel):
     local_target_defaults: LocalTarget | None = None
     fanouts: dict[str, list[str]] = Field(default_factory=dict)
     nodes: list[NodeSpec]
-
-    @model_validator(mode="before")
-    @classmethod
-    def apply_defaults(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        payload = dict(data)
-        base_dir = payload.pop("base_dir", None)
-        expanded = expand_compact_nodes(payload, base_dir=base_dir)
-        expanded = apply_node_defaults(expanded)
-        return apply_local_target_defaults(expanded)
 
     @model_validator(mode="after")
     def validate_nodes(self) -> "PipelineSpec":

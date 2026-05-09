@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 try:
     from enum import StrEnum
 except ImportError:  # pragma: no cover - Python < 3.11
@@ -21,81 +22,82 @@ from agentflow.defaults import (
     default_smoke_pipeline_path,
     render_bundled_template,
 )
-from agentflow.specs import normalize_agent_name
-from agentflow.tuned_agents import list_tuned_agent_records, resolve_tuned_agent_version, run_evolution_from_payload
+from agentflow.specs import (
+    AgentKind,
+    NodeResult,
+    NodeSpec,
+    NodeStatus,
+    PipelineSpec,
+    ProviderConfig,
+    RunRecord,
+    RunStatus,
+    normalize_agent_name,
+)
+from agentflow.store import RunStore
+from agentflow.tuned_agents import (
+    TunedAgentRecord,
+    list_tuned_agent_records,
+    resolve_tuned_agent_version,
+    run_evolution_from_payload,
+)
+
+if TYPE_CHECKING:
+    from agentflow.orchestrator import Orchestrator
 
 app = typer.Typer(add_completion=False)
 
 
-class StructuredOutputFormat(StrEnum):
+class OutputFormat(StrEnum):
     AUTO = "auto"
     JSON = "json"
     JSON_SUMMARY = "json-summary"
     SUMMARY = "summary"
 
 
-class InspectionOutputFormat(StrEnum):
-    AUTO = "auto"
-    JSON = "json"
-    JSON_SUMMARY = "json-summary"
-    SUMMARY = "summary"
-
-
-class RunOutputFormat(StrEnum):
-    AUTO = "auto"
-    JSON = "json"
-    JSON_SUMMARY = "json-summary"
-    SUMMARY = "summary"
-
-
-def _build_runtime(runs_dir: str, max_concurrent_runs: int) -> tuple[object, object]:
+def _build_runtime(runs_dir: str, max_concurrent_runs: int) -> tuple[RunStore, Orchestrator]:
     from agentflow.orchestrator import Orchestrator
-    from agentflow.store import RunStore
 
     store = RunStore(runs_dir)
     orchestrator = Orchestrator(store=store, max_concurrent_runs=max_concurrent_runs)
     return store, orchestrator
 
 
-def _build_store(runs_dir: str) -> object:
-    from agentflow.store import RunStore
-
+def _build_store(runs_dir: str) -> RunStore:
     return RunStore(runs_dir)
 
 
-def _render_tuned_agents_summary(records: list[object]) -> str:
+def _render_tuned_agents_summary(records: list[TunedAgentRecord]) -> str:
     if not records:
         return "No tuned agents found."
     lines: list[str] = []
     for record in records:
         lines.append(
-            f"{getattr(record, 'name', '-')}"
-            f" [{_status_value(getattr(record, 'base_agent', '-'))}] "
-            f"latest={getattr(record, 'latest_version', '-') or '-'} "
-            f"versions={len(getattr(record, 'versions', []) or [])}"
+            f"{record.name}"
+            f" [{_status_value(record.base_agent)}] "
+            f"latest={record.latest_version or '-'} "
+            f"versions={len(record.versions)}"
         )
     return "\n".join(lines)
 
 
-def _render_tuned_agent_detail(record: object | None) -> str:
+def _render_tuned_agent_detail(record: TunedAgentRecord | None) -> str:
     if record is None:
         return "Tuned agent not found."
     lines = [
-        f"Name: {getattr(record, 'name', '-')}",
-        f"Base agent: {_status_value(getattr(record, 'base_agent', '-'))}",
-        f"Latest version: {getattr(record, 'latest_version', '-') or '-'}",
-        f"Versions: {len(getattr(record, 'versions', []) or [])}",
+        f"Name: {record.name}",
+        f"Base agent: {_status_value(record.base_agent)}",
+        f"Latest version: {record.latest_version or '-'}",
+        f"Versions: {len(record.versions)}",
     ]
-    versions = getattr(record, "versions", []) or []
-    for version in versions:
+    for version in record.versions:
         lines.append(
-            f" - {getattr(version, 'id', '-')} status={getattr(version, 'status', '-')} "
-            f"repo={getattr(version, 'repo_path', '-')}"
+            f" - {version.id} status={version.status} "
+            f"repo={version.repo_path}"
         )
     return "\n".join(lines)
 
 
-def _render_evolution_summary(result: dict[str, object]) -> str:
+def _render_evolution_summary(result: dict[str, Any]) -> str:
     return "\n".join(
         [
             f"Agent: {result.get('agent_name', '-')}",
@@ -107,7 +109,7 @@ def _render_evolution_summary(result: dict[str, object]) -> str:
     )
 
 
-def _load_pipeline(path: str) -> object:
+def _load_pipeline(path: str) -> PipelineSpec:
     from agentflow.loader import load_pipeline_from_path
 
     try:
@@ -117,7 +119,7 @@ def _load_pipeline(path: str) -> object:
         raise typer.Exit(code=1) from exc
 
 
-def _status_value(status: object) -> str:
+def _status_value(status: AgentKind | NodeStatus | RunStatus | str) -> str:
     return getattr(status, "value", str(status))
 
 
@@ -164,79 +166,55 @@ def _preview_text(text: str | None, *, limit: int = 100) -> str | None:
     return collapsed[: limit - 1].rstrip() + "…"
 
 
-def _node_attempt_count(node: object) -> int:
-    current_attempt = getattr(node, "current_attempt", 0) or 0
-    attempts = getattr(node, "attempts", []) or []
+def _node_attempt_count(node: NodeResult) -> int:
+    current_attempt = node.current_attempt or 0
+    attempts = node.attempts or []
     return current_attempt or len(attempts)
 
 
-def _provider_name(value: object) -> str | None:
+def _provider_name(value: str | ProviderConfig | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
-    if isinstance(value, dict):
-        name = value.get("name")
-        return str(name) if name else None
-    name = getattr(value, "name", None)
-    if name:
-        return str(name)
-    if hasattr(value, "model_dump"):
-        data = value.model_dump(mode="json")
-        if isinstance(data, dict):
-            name = data.get("name")
-            if name:
-                return str(name)
-    return None
+    return value.name or None
 
 
-def _pipeline_node_map(record: object) -> dict[str, object]:
-    pipeline_nodes = getattr(getattr(record, "pipeline", None), "nodes", None) or []
-    return {
-        node_id: node
-        for node in pipeline_nodes
-        if (node_id := getattr(node, "id", None))
-    }
+def _pipeline_node_map(record: RunRecord) -> dict[str, NodeSpec]:
+    return {node.id: node for node in record.pipeline.nodes}
 
 
-def _node_identity(node_id: str, pipeline_node: object | None) -> str:
+def _node_identity(node_id: str, pipeline_node: NodeSpec | None) -> str:
     if pipeline_node is None:
         return node_id
 
     parts: list[str] = []
-    agent = getattr(pipeline_node, "agent", None)
-    if agent is not None:
-        parts.append(_status_value(agent))
+    parts.append(_status_value(pipeline_node.agent))
 
-    model = getattr(pipeline_node, "model", None)
-    if model:
-        parts.append(f"model={model}")
+    if pipeline_node.model:
+        parts.append(f"model={pipeline_node.model}")
 
-    provider = _provider_name(getattr(pipeline_node, "provider", None))
+    provider = _provider_name(pipeline_node.provider)
     if provider:
         parts.append(f"provider={provider}")
 
-    if not parts:
-        return node_id
     return f"{node_id} [{', '.join(parts)}]"
 
 
-def _node_text_candidates(node: object) -> list[str]:
+def _node_text_candidates(node: NodeResult) -> list[str]:
     candidates: list[str] = []
-    for value in (getattr(node, "final_response", None), getattr(node, "output", None)):
+    for value in (node.final_response, node.output):
         if isinstance(value, str) and value.strip():
             candidates.append(value)
-    for stream_name in ("stderr_lines", "stdout_lines"):
-        for line in getattr(node, stream_name, []) or []:
+    for stream_lines in (node.stderr_lines, node.stdout_lines):
+        for line in stream_lines:
             if isinstance(line, str) and line.strip():
                 candidates.append(line)
     return candidates
 
 
-def _provider_error_subject(pipeline_node: object | None) -> str:
-    agent_value = getattr(pipeline_node, "agent", None)
-    agent_name = _status_value(agent_value).strip().lower() if agent_value is not None else ""
-    provider_name = (_provider_name(getattr(pipeline_node, "provider", None)) or "").strip().lower()
+def _provider_error_subject(pipeline_node: NodeSpec | None) -> str:
+    agent_name = _status_value(pipeline_node.agent).strip().lower() if pipeline_node is not None else ""
 
     if agent_name == "codex":
         return "Codex"
@@ -245,7 +223,7 @@ def _provider_error_subject(pipeline_node: object | None) -> str:
     return "The agent"
 
 
-def _provider_error_diagnosis(node: object, pipeline_node: object | None) -> str | None:
+def _provider_error_diagnosis(node: NodeResult, pipeline_node: NodeSpec | None) -> str | None:
     combined = "\n".join(_node_text_candidates(node))
     if "API Error:" not in combined:
         return None
@@ -264,65 +242,57 @@ def _provider_error_diagnosis(node: object, pipeline_node: object | None) -> str
     )
 
 
-def _node_preview(node: object) -> str | None:
-    for candidate in (getattr(node, "final_response", None), getattr(node, "output", None)):
+def _node_preview(node: NodeResult) -> str | None:
+    for candidate in (node.final_response, node.output):
         preview = _preview_text(candidate)
         if preview is not None:
             return preview
-    stderr_lines = getattr(node, "stderr_lines", []) or []
-    if stderr_lines:
-        return _preview_text(stderr_lines[-1])
+    if node.stderr_lines:
+        return _preview_text(node.stderr_lines[-1])
     return None
 
 
-def _build_run_summary(record: object, run_dir: Path | str | None = None) -> dict[str, object]:
-    summary: dict[str, object] = {
+def _build_run_summary(record: RunRecord, run_dir: Path | str | None = None) -> dict[str, Any]:
+    summary: dict[str, Any] = {
         "id": record.id,
         "status": _status_value(record.status),
         "nodes": [],
     }
-    pipeline_name = getattr(getattr(record, "pipeline", None), "name", None)
-    if pipeline_name:
-        summary["pipeline"] = {"name": pipeline_name}
-    started_at = getattr(record, "started_at", None)
-    if started_at:
-        summary["started_at"] = started_at
-    finished_at = getattr(record, "finished_at", None)
-    if finished_at:
-        summary["finished_at"] = finished_at
-    duration = _format_duration(started_at, finished_at)
+    if record.pipeline.name:
+        summary["pipeline"] = {"name": record.pipeline.name}
+    if record.started_at:
+        summary["started_at"] = record.started_at
+    if record.finished_at:
+        summary["finished_at"] = record.finished_at
+    duration = _format_duration(record.started_at, record.finished_at)
     if duration is not None:
         summary["duration"] = duration
-    duration_seconds = _duration_seconds(started_at, finished_at)
+    duration_seconds = _duration_seconds(record.started_at, record.finished_at)
     if duration_seconds is not None:
         summary["duration_seconds"] = duration_seconds
     if run_dir is not None:
         summary["run_dir"] = str(run_dir)
 
-    nodes: list[dict[str, object]] = []
+    nodes: list[dict[str, Any]] = []
     pipeline_nodes = _pipeline_node_map(record)
-    for node_id, node in (getattr(record, "nodes", {}) or {}).items():
+    for node_id, node in record.nodes.items():
         pipeline_node = pipeline_nodes.get(node_id)
-        node_summary: dict[str, object] = {
+        node_summary: dict[str, Any] = {
             "id": node_id,
-            "status": _status_value(getattr(node, "status", "unknown")),
+            "status": _status_value(node.status),
         }
         if pipeline_node is not None:
-            agent = getattr(pipeline_node, "agent", None)
-            if agent is not None:
-                node_summary["agent"] = _status_value(agent)
-            model = getattr(pipeline_node, "model", None)
-            if model:
-                node_summary["model"] = model
-            provider = _provider_name(getattr(pipeline_node, "provider", None))
+            node_summary["agent"] = _status_value(pipeline_node.agent)
+            if pipeline_node.model:
+                node_summary["model"] = pipeline_node.model
+            provider = _provider_name(pipeline_node.provider)
             if provider:
                 node_summary["provider"] = provider
         attempts = _node_attempt_count(node)
         if attempts:
             node_summary["attempts"] = attempts
-        exit_code = getattr(node, "exit_code", None)
-        if exit_code is not None:
-            node_summary["exit_code"] = exit_code
+        if node.exit_code is not None:
+            node_summary["exit_code"] = node.exit_code
         preview = _node_preview(node)
         if preview is not None:
             node_summary["preview"] = preview
@@ -335,7 +305,7 @@ def _build_run_summary(record: object, run_dir: Path | str | None = None) -> dic
     return summary
 
 
-def _render_run_summary(record: object, run_dir: Path | str | None = None) -> str:
+def _render_run_summary(record: RunRecord, run_dir: Path | str | None = None) -> str:
     summary = _build_run_summary(record, run_dir=run_dir)
     lines = [f"Run {summary['id']}: {summary['status']}"]
     pipeline = summary.get("pipeline")
@@ -383,45 +353,42 @@ def _render_run_summary(record: object, run_dir: Path | str | None = None) -> st
     return "\n".join(lines)
 
 
-def _resolve_run_output(output: RunOutputFormat, *, err: bool = False) -> RunOutputFormat:
-    if output != RunOutputFormat.AUTO:
+def _resolve_output_format(output: OutputFormat, *, err: bool = False) -> OutputFormat:
+    if output != OutputFormat.AUTO:
         return output
     if _stream_supports_tty_summary(err=err):
-        return RunOutputFormat.SUMMARY
-    return RunOutputFormat.JSON
+        return OutputFormat.SUMMARY
+    return OutputFormat.JSON
 
 
-def _echo_run_result(record: object, *, output: RunOutputFormat, run_dir: Path | str | None = None) -> None:
-    resolved_output = _resolve_run_output(output)
-    if resolved_output == RunOutputFormat.SUMMARY:
+def _echo_run_result(record: RunRecord, *, output: OutputFormat, run_dir: Path | str | None = None) -> None:
+    resolved_output = _resolve_output_format(output)
+    if resolved_output == OutputFormat.SUMMARY:
         typer.echo(_render_run_summary(record, run_dir=run_dir))
         return
-    if resolved_output == RunOutputFormat.JSON_SUMMARY:
+    if resolved_output == OutputFormat.JSON_SUMMARY:
         typer.echo(json.dumps(_build_run_summary(record, run_dir=run_dir), indent=2))
         return
     typer.echo(json.dumps(record.model_dump(mode="json"), indent=2))
 
 
-def _run_dir_for_record(store: object | None, run_id: str) -> Path | str | None:
+def _run_dir_for_record(store: RunStore | None, run_id: str) -> Path | str | None:
     if store is None:
         return None
-    run_dir = getattr(store, "run_dir", None)
-    if not callable(run_dir):
-        return None
     try:
-        return run_dir(run_id)
+        return store.run_dir(run_id)
     except (OSError, TypeError, ValueError):
         return None
 
 
-def _build_runs_summary(records: list[object], *, store: object | None = None) -> list[dict[str, object]]:
+def _build_runs_summary(records: list[RunRecord], *, store: RunStore | None = None) -> list[dict[str, Any]]:
     return [
-        _build_run_summary(record, run_dir=_run_dir_for_record(store, getattr(record, "id", "")))
+        _build_run_summary(record, run_dir=_run_dir_for_record(store, record.id))
         for record in records
     ]
 
 
-def _render_runs_summary(records: list[object], *, store: object | None = None, total: int | None = None) -> str:
+def _render_runs_summary(records: list[RunRecord], *, store: RunStore | None = None, total: int | None = None) -> str:
     summaries = _build_runs_summary(records, store=store)
     if not summaries:
         return "No runs found."
@@ -442,26 +409,20 @@ def _render_runs_summary(records: list[object], *, store: object | None = None, 
     return "\n".join(lines)
 
 
-def _echo_runs_result(records: list[object], *, store: object | None, output: RunOutputFormat, total: int | None = None) -> None:
-    resolved_output = _resolve_run_output(output)
-    if resolved_output == RunOutputFormat.SUMMARY:
+def _echo_runs_result(records: list[RunRecord], *, store: RunStore | None, output: OutputFormat, total: int | None = None) -> None:
+    resolved_output = _resolve_output_format(output)
+    if resolved_output == OutputFormat.SUMMARY:
         typer.echo(_render_runs_summary(records, store=store, total=total))
         return
-    if resolved_output == RunOutputFormat.JSON_SUMMARY:
+    if resolved_output == OutputFormat.JSON_SUMMARY:
         typer.echo(json.dumps(_build_runs_summary(records, store=store), indent=2))
         return
 
-    payload: list[object] = []
-    for record in records:
-        model_dump = getattr(record, "model_dump", None)
-        if callable(model_dump):
-            payload.append(model_dump(mode="json"))
-            continue
-        payload.append(_build_run_summary(record, run_dir=_run_dir_for_record(store, getattr(record, "id", ""))))
+    payload: list[dict[str, Any]] = [record.model_dump(mode="json") for record in records]
     typer.echo(json.dumps(payload, indent=2))
 
 
-def _get_run_or_exit(store: object, run_id: str, *, runs_dir: str) -> object:
+def _get_run_or_exit(store: RunStore, run_id: str, *, runs_dir: str) -> RunRecord:
     try:
         return store.get_run(run_id)
     except KeyError as exc:
@@ -469,20 +430,20 @@ def _get_run_or_exit(store: object, run_id: str, *, runs_dir: str) -> object:
         raise typer.Exit(code=1) from exc
 
 
-def _run_pipeline(pipeline: object, runs_dir: str, max_concurrent_runs: int, output: RunOutputFormat) -> None:
+def _run_pipeline(pipeline: PipelineSpec, runs_dir: str, max_concurrent_runs: int, output: OutputFormat) -> None:
     store, orchestrator = _build_runtime(runs_dir, max_concurrent_runs)
 
     async def _run() -> None:
         run_record = await orchestrator.submit(pipeline)
         completed = await orchestrator.wait(run_record.id, timeout=None)
-        run_dir = store.run_dir(run_record.id) if hasattr(store, "run_dir") else None
+        run_dir = store.run_dir(run_record.id)
         _echo_run_result(completed, output=output, run_dir=run_dir)
         raise typer.Exit(code=0 if _status_value(completed.status) == "completed" else 1)
 
     asyncio.run(_run())
 
 
-def _run_pipeline_path(path: str, runs_dir: str, max_concurrent_runs: int, output: RunOutputFormat) -> None:
+def _run_pipeline_path(path: str, runs_dir: str, max_concurrent_runs: int, output: OutputFormat) -> None:
     _run_pipeline(_load_pipeline(path), runs_dir, max_concurrent_runs, output)
 
 
@@ -499,36 +460,20 @@ def _stream_supports_tty_summary(*, err: bool) -> bool:
     return bool(callable(isatty) and isatty())
 
 
-def _resolve_structured_output(output: StructuredOutputFormat, *, err: bool) -> StructuredOutputFormat:
-    if output != StructuredOutputFormat.AUTO:
-        return output
-    if _stream_supports_tty_summary(err=err):
-        return StructuredOutputFormat.SUMMARY
-    return StructuredOutputFormat.JSON
-
-
-def _echo_inspection(report: dict[str, object], *, output: InspectionOutputFormat) -> None:
+def _echo_inspection(report: dict[str, Any], *, output: OutputFormat) -> None:
     from agentflow.inspection import build_launch_inspection_summary
 
-    resolved_output = _resolve_inspection_output(output)
+    resolved_output = _resolve_output_format(output)
 
-    if resolved_output == InspectionOutputFormat.SUMMARY:
+    if resolved_output == OutputFormat.SUMMARY:
         from agentflow.inspection import render_launch_inspection_summary
 
         typer.echo(render_launch_inspection_summary(report))
         return
-    if resolved_output == InspectionOutputFormat.JSON_SUMMARY:
+    if resolved_output == OutputFormat.JSON_SUMMARY:
         typer.echo(json.dumps(build_launch_inspection_summary(report), indent=2))
         return
     typer.echo(json.dumps(report, indent=2))
-
-
-def _resolve_inspection_output(output: InspectionOutputFormat) -> InspectionOutputFormat:
-    if output != InspectionOutputFormat.AUTO:
-        return output
-    if _stream_supports_tty_summary(err=False):
-        return InspectionOutputFormat.SUMMARY
-    return InspectionOutputFormat.JSON
 
 
 def _parse_template_settings(raw_settings: list[str] | None) -> dict[str, str]:
@@ -643,8 +588,8 @@ def init(
 @app.command()
 def runs(
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -660,8 +605,8 @@ def runs(
 def show(
     run_id: str,
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -676,8 +621,8 @@ def cancel(
     run_id: str,
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -700,8 +645,8 @@ def rerun(
     run_id: str,
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -726,8 +671,8 @@ def resume(
     run_id: str,
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -765,8 +710,8 @@ def evolve(
     optimizer: str = typer.Option("codex", help="Optimizer agent kind to patch the cloned repo."),
     profile: str = typer.Option("", "--profile", help="Tuner profile name under `agent_tuner/`. Defaults to `target`."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
-    output: StructuredOutputFormat = typer.Option(
-        StructuredOutputFormat.SUMMARY,
+    output: OutputFormat = typer.Option(
+        OutputFormat.SUMMARY,
         "--output",
         help="Structured output format for evolution results.",
     ),
@@ -810,7 +755,7 @@ def evolve(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    if output == StructuredOutputFormat.JSON:
+    if output == OutputFormat.JSON:
         typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
         return
     typer.echo(_render_evolution_summary(result))
@@ -819,14 +764,14 @@ def evolve(
 @app.command("tuned-agents")
 def tuned_agents(
     workspace: str = typer.Option(".", help="Workspace root that holds `.agentflow/tuned_agents`."),
-    output: StructuredOutputFormat = typer.Option(
-        StructuredOutputFormat.SUMMARY,
+    output: OutputFormat = typer.Option(
+        OutputFormat.SUMMARY,
         "--output",
         help="Structured output format for tuned agent listings.",
     ),
 ) -> None:
     records = list_tuned_agent_records(Path(workspace).expanduser().resolve())
-    if output == StructuredOutputFormat.JSON:
+    if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
                 [record.model_dump(mode="json") for record in records],
@@ -842,8 +787,8 @@ def tuned_agents(
 def tuned_agent(
     name: str,
     workspace: str = typer.Option(".", help="Workspace root that holds `.agentflow/tuned_agents`."),
-    output: StructuredOutputFormat = typer.Option(
-        StructuredOutputFormat.SUMMARY,
+    output: OutputFormat = typer.Option(
+        OutputFormat.SUMMARY,
         "--output",
         help="Structured output format for tuned agent details.",
     ),
@@ -856,7 +801,7 @@ def tuned_agent(
     latest = resolve_tuned_agent_version(Path(workspace).expanduser().resolve(), name)
     payload = record.model_dump(mode="json")
     payload["latest"] = latest.model_dump(mode="json") if latest is not None else None
-    if output == StructuredOutputFormat.JSON:
+    if output == OutputFormat.JSON:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     typer.echo(_render_tuned_agent_detail(record))
@@ -867,8 +812,8 @@ def inspect(
     path: str,
     node: list[str] = typer.Option(None, "--node", "-n", help="Inspect only the selected node ids."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
-    output: InspectionOutputFormat = typer.Option(
-        InspectionOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -888,8 +833,8 @@ def run(
     path: str,
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
-    output: RunOutputFormat = typer.Option(
-        RunOutputFormat.AUTO,
+    output: OutputFormat = typer.Option(
+        OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
@@ -902,7 +847,7 @@ def smoke(
     path: str = typer.Argument("", help="Optional pipeline path. Defaults to the bundled real-agent smoke example."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
-    output: RunOutputFormat = typer.Option(RunOutputFormat.SUMMARY, "--output", help="Result output format."),
+    output: OutputFormat = typer.Option(OutputFormat.SUMMARY, "--output", help="Result output format."),
 ) -> None:
     selected_path = path or default_smoke_pipeline_path()
     _run_pipeline(_load_pipeline(selected_path), runs_dir, max_concurrent_runs, output)
