@@ -12,7 +12,7 @@ class PythonAdapter:
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         return PreparedExecution(
             command=["python3", "-c", prompt],
-            env=dict(node.env or {}),
+            env={},
             cwd=str(paths.host_workdir),
             trace_kind="python",
             runtime_files={},
@@ -26,7 +26,7 @@ class ShellAdapter:
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         return PreparedExecution(
             command=["bash", "-c", prompt],
-            env=dict(node.env or {}),
+            env={},
             cwd=str(paths.host_workdir),
             trace_kind="shell",
             runtime_files={},

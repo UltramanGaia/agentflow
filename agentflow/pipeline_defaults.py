@@ -18,7 +18,7 @@ _NODE_DEFAULT_FORBIDDEN_FIELDS = {
     "fanout_dependencies",
 }
 _NODE_DEFAULT_LIST_MERGE_FIELDS = {"extra_args", "skills"}
-_NODE_DEFAULT_DICT_MERGE_FIELDS = {"env", "provider"}
+_NODE_DEFAULT_DICT_MERGE_FIELDS = {"provider"}
 
 
 def _local_target_defaults_payload(value: Any) -> dict[str, Any] | None:

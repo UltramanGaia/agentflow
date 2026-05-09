@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from agentflow.agents.base import AgentAdapter
-from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs import NodeSpec, RepoInstructionsMode, ToolAccess
 
@@ -51,14 +50,13 @@ class ClaudeAdapter(AgentAdapter):
             command.extend(["--model", node.model])
         allowed_tools = _CLAUDE_READ_ONLY_TOOLS if node.tools == ToolAccess.READ_ONLY else _CLAUDE_READ_WRITE_TOOLS
         command.extend(["--tools", ",".join(allowed_tools)])
-        env = merge_env_layers(node.env)
         command.extend(node.extra_args)
         cwd = paths.target_workdir
         if repo_instructions_ignored:
             cwd = str(Path(paths.target_runtime_dir))
         return PreparedExecution(
             command=command,
-            env=env,
+            env={},
             cwd=cwd,
             trace_kind="claude",
         )

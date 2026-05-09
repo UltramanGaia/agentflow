@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from agentflow.agents.base import AgentAdapter
-from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs import NodeSpec, RepoInstructionsMode, ToolAccess
 
@@ -16,7 +15,6 @@ class PiAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "pi"
-        env = merge_env_layers(node.env)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
 
         command: list[str] = [
@@ -49,7 +47,7 @@ class PiAdapter(AgentAdapter):
         # reference by Pi's positional-message argument handling.
         return PreparedExecution(
             command=command,
-            env=env,
+            env={},
             cwd=cwd,
             trace_kind="pi",
             stdin=prompt,

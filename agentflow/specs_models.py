@@ -43,7 +43,6 @@ class NodeSpec(BaseModel):
     repo_instructions_mode: RepoInstructionsMode = RepoInstructionsMode.INHERIT
     output_key: str | None = None
     timeout_seconds: int | None = Field(default=1800, gt=0)
-    env: dict[str, str] = Field(default_factory=dict)
     executable: str | None = None
     extra_args: list[str] = Field(default_factory=list)
     description: str | None = None

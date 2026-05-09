@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from agentflow.agents.base import AgentAdapter
-from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs import NodeSpec, RepoInstructionsMode
 
@@ -11,7 +10,6 @@ from agentflow.specs import NodeSpec, RepoInstructionsMode
 class GaiaAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         executable = node.executable or "gaia"
-        env = merge_env_layers(node.env)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
 
         command = [
@@ -34,7 +32,7 @@ class GaiaAdapter(AgentAdapter):
 
         return PreparedExecution(
             command=command,
-            env=env,
+            env={},
             cwd=cwd,
             trace_kind="gaia",
         )

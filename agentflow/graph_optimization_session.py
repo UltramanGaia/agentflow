@@ -43,7 +43,6 @@ async def run_optimizer_in_thread(
     prompt: str,
     repo_dir: Path,
     runtime_dir: Path,
-    env: dict[str, str],
 ) -> Any:
     return await asyncio.to_thread(
         _run_optimizer,
@@ -51,7 +50,6 @@ async def run_optimizer_in_thread(
         prompt=prompt,
         repo_dir=repo_dir,
         runtime_dir=runtime_dir,
-        env=env,
     )
 
 
@@ -220,7 +218,6 @@ class GraphOptimizationSession:
                     prompt=prompt,
                     repo_dir=round_dir,
                     runtime_dir=attempt_dir / "optimizer-runtime",
-                    env={},
                 )
                 write_optimizer_result(
                     attempt_dir / OPTIMIZER_RESULT_FILENAME,

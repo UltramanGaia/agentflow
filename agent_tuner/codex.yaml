@@ -8,8 +8,6 @@ test_command: cargo test -p codex-cli --lib && cargo test -p codex-models-manage
 smoke_command: "{executable} --help >/dev/null"
 executable_path: target/debug/codex
 max_attempts: 3
-env:
-  AGENTFLOW_CODEX_SANDBOX_MODE: danger-full-access
 evolution_prompt: |
   Evolve Codex using the copied traces from the selected Codex nodes.
 

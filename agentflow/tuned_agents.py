@@ -80,7 +80,6 @@ class TunerConfig(BaseModel):
     executable_path: str | None = None
     evolution_prompt: str
     tunable_surfaces: list[TunableSurface] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
     max_attempts: int = Field(default=3, ge=1)
 
     @field_validator("name", "repo_url", "default_branch", "build_command", "test_command", "smoke_command", "evolution_prompt")
@@ -125,7 +124,6 @@ class TunedAgentVersion(BaseModel):
     repo_path: str
     workdir: str
     executable: str
-    env: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
 
 
@@ -314,7 +312,6 @@ def resolve_node_for_execution(node: NodeSpec, workspace: Path) -> PreparedAgent
     resolved_node = node.model_copy(
         update={
             "agent": version.base_agent,
-            "env": {**version.env, **dict(node.env or {})},
             "executable": node.executable or version.executable,
             "target": resolved_target,
         }
@@ -386,9 +383,7 @@ def _run_optimizer(
     prompt: str,
     repo_dir: Path,
     runtime_dir: Path,
-    env: dict[str, str],
 ) -> CommandExecution:
-    normalized_env = dict(env)
     node = NodeSpec.model_validate(
         {
             "id": "optimizer",
@@ -397,7 +392,6 @@ def _run_optimizer(
             "tools": "read_write",
             "repo_instructions_mode": "ignore",
             "target": {"kind": "local", "cwd": str(repo_dir)},
-            "env": normalized_env,
         }
     )
     adapter = default_adapter_registry.get(optimizer)
@@ -430,7 +424,6 @@ def _run_shell_command(
     version_dir: Path,
     traces_dir: Path,
     executable: str,
-    env: dict[str, str],
 ) -> CommandExecution:
     command = _render_command(
         command_template,
@@ -442,7 +435,6 @@ def _run_shell_command(
     completed = subprocess.run(
         ["bash", "-c", command],
         cwd=str(repo_dir),
-        env={**os.environ, **env},
         capture_output=True,
         text=True,
         check=False,
@@ -601,7 +593,6 @@ def _write_failure_metadata(
     profile: str,
     repo_dir: Path,
     resolved_executable: str,
-    env: dict[str, str],
     source_run_id: str | None,
     source_nodes: list[str],
     summary: str,
@@ -617,7 +608,6 @@ def _write_failure_metadata(
         repo_path=str(repo_dir),
         workdir=str(repo_dir),
         executable=resolved_executable,
-        env=env,
         summary=summary,
     )
     _write_json(version_dir / "version.json", failed_version.model_dump(mode="json"))
@@ -658,7 +648,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             f"configured workdir_subpath `{resolved_config.config.workdir_subpath}` does not exist in `{repo_dir}`"
         )
 
-    env = dict(resolved_config.config.env)
     resolved_executable = _resolved_executable_path(resolved_config.config, repo_workdir)
     failure_summary: str | None = None
 
@@ -679,7 +668,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             prompt=prompt,
             repo_dir=repo_dir,
             runtime_dir=attempt_dir / "optimizer-runtime",
-            env=env,
         )
         _write_attempt_artifact(attempt_dir, "optimizer", optimizer_result)
         if optimizer_result.exit_code != 0:
@@ -692,7 +680,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             version_dir=version_dir,
             traces_dir=traces_dir,
             executable=resolved_executable,
-            env=env,
         )
         _write_attempt_artifact(attempt_dir, "build", build_result)
         if build_result.exit_code != 0:
@@ -705,7 +692,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             version_dir=version_dir,
             traces_dir=traces_dir,
             executable=resolved_executable,
-            env=env,
         )
         _write_attempt_artifact(attempt_dir, "test", test_result)
         if test_result.exit_code != 0:
@@ -718,7 +704,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             version_dir=version_dir,
             traces_dir=traces_dir,
             executable=resolved_executable,
-            env=env,
         )
         _write_attempt_artifact(attempt_dir, "smoke", smoke_result)
         if smoke_result.exit_code != 0:
@@ -742,7 +727,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             repo_path=str(repo_dir),
             workdir=str(repo_workdir),
             executable=str(executable_path),
-            env=env,
             summary=_parse_agent_output(optimizer_kind, f"optimizer_{version_id}", optimizer_result.stdout),
         )
         register_tuned_agent_version(workspace, version)
@@ -764,7 +748,6 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         profile=request.profile,
         repo_dir=repo_dir,
         resolved_executable=resolved_executable,
-        env=env,
         source_run_id=request.run_id,
         source_nodes=request.source_nodes,
         summary=failure_summary or "evolution failed without diagnostics",

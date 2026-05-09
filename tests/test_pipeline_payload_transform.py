@@ -8,13 +8,12 @@ def _pipeline_payload() -> dict[str, object]:
     return {
         "name": "defaults",
         "local_target_defaults": {"cwd": "workspace", "shell_init": "export GLOBAL_INIT=1"},
-        "node_defaults": {"tools": "read_write", "env": {"GLOBAL": "1"}},
+        "node_defaults": {"tools": "read_write"},
         "nodes": [
             {
                 "id": "node",
                 "agent": "shell",
                 "prompt": "run",
-                "env": {"LOCAL": "1"},
             }
         ],
     }
@@ -26,7 +25,6 @@ def test_loader_applies_pipeline_payload_transformations() -> None:
 
     assert node.agent == AgentKind.SHELL
     assert node.tools == "read_write"
-    assert node.env == {"GLOBAL": "1", "LOCAL": "1"}
     assert node.target.cwd == "workspace"
     assert node.target.shell_init == "export GLOBAL_INIT=1"
 
@@ -35,7 +33,6 @@ def test_pipeline_spec_validation_does_not_implicitly_transform_payloads() -> No
     pipeline = PipelineSpec.model_validate(_pipeline_payload())
     node = pipeline.nodes[0]
 
-    assert node.env == {"LOCAL": "1"}
     assert node.target.cwd is None
     assert node.target.shell is None
     assert node.target.shell_init is None
@@ -46,6 +43,5 @@ def test_prepare_pipeline_payload_is_the_explicit_transformation_boundary() -> N
     pipeline = PipelineSpec.model_validate(prepared)
     node = pipeline.nodes[0]
 
-    assert node.env == {"GLOBAL": "1", "LOCAL": "1"}
     assert node.target.cwd == "workspace"
     assert node.target.shell_init == "export GLOBAL_INIT=1"
