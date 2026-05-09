@@ -43,7 +43,11 @@ async def run_optimizer_in_thread(
     prompt: str,
     repo_dir: Path,
     runtime_dir: Path,
+    env: dict[str, str] | None = None,
 ) -> Any:
+    # Keep accepting `env` for older call sites; optimizer execution currently
+    # derives its environment from the prepared local agent invocation.
+    del env
     return await asyncio.to_thread(
         _run_optimizer,
         optimizer_kind,

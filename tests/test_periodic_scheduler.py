@@ -6,7 +6,7 @@ from typing import Any
 
 from agentflow.periodic import PeriodicActionEnvelope
 from agentflow.periodic_scheduler import PeriodicScheduler
-from agentflow.runtime_state import NodeRuntimeState
+from agentflow.run_state import RunStateRegistry
 from agentflow.specs import AgentKind, NodeResult, NodeSpec, NodeStatus, PipelineSpec, RunRecord
 from agentflow.store import RunStore
 
@@ -34,9 +34,7 @@ def test_periodic_scheduler_detects_settled_fanout(tmp_path: Path) -> None:
     scheduler = PeriodicScheduler(
         store=RunStore(tmp_path / "runs"),
         publish=lambda *args, **kwargs: None,
-        node_runtime_state=lambda run_id, node_id: NodeRuntimeState(),
-        request_node_cancel=lambda run_id, node_id: None,
-        queue_node_rerun=lambda run_id, node_id: None,
+        run_state=RunStateRegistry(),
     )
 
     assert scheduler.fanout_group_settled(pipeline, results, "workers")
@@ -56,9 +54,7 @@ def test_periodic_scheduler_applies_cancel_and_rerun_actions(tmp_path: Path) -> 
     )
     asyncio.run(store.create_run(record))
     published: list[tuple[str, dict[str, Any]]] = []
-    cancelled: list[str] = []
-    reruns: list[str] = []
-    runtime_states: dict[str, NodeRuntimeState] = {}
+    run_state = RunStateRegistry()
 
     async def publish(run_id: str, event_type: str, **data: Any) -> None:
         published.append((event_type, data))
@@ -66,9 +62,7 @@ def test_periodic_scheduler_applies_cancel_and_rerun_actions(tmp_path: Path) -> 
     scheduler = PeriodicScheduler(
         store=store,
         publish=publish,
-        node_runtime_state=lambda run_id, node_id: runtime_states.setdefault(node_id, NodeRuntimeState()),
-        request_node_cancel=lambda run_id, node_id: cancelled.append(node_id),
-        queue_node_rerun=lambda run_id, node_id: reruns.append(node_id),
+        run_state=run_state,
     )
     actions = PeriodicActionEnvelope.model_validate(
         {
@@ -91,8 +85,8 @@ def test_periodic_scheduler_applies_cancel_and_rerun_actions(tmp_path: Path) -> 
         )
     )
 
-    assert cancelled == ["worker"]
-    assert reruns == ["done"]
+    assert run_state.should_cancel_node("run", "worker")
+    assert run_state.consume_pending_node_rerun("run", "done")
     assert remaining == {"done"}
     assert store.get_run("run").nodes["done"].status == NodeStatus.PENDING
     assert published[0][0] == "node_control_actions_applied"

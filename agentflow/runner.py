@@ -76,9 +76,6 @@ class Runner(Protocol):
 class LocalRunner:
     _TERMINATE_GRACE_SECONDS = 1.0
 
-    def _augment_local_env(self, prepared: PreparedExecution, paths: ExecutionPaths) -> dict[str, str]:
-        return dict(prepared.env)
-
     def _render_shell_init(self, shell_init: str | list[str] | None) -> str | None:
         if isinstance(shell_init, str):
             normalized = shell_init.strip()
@@ -101,23 +98,27 @@ class LocalRunner:
             shell_command = f"{shell_init} && {shell_command}"
         return ["/bin/bash", "-c", shell_command], {"AGENTFLOW_TARGET_COMMAND": command_text}
 
-    def plan_execution(
+    def _resolve_launch_plan(
         self,
         node: NodeSpec,
         prepared: PreparedExecution,
         paths: ExecutionPaths,
     ) -> LaunchPlan:
         command, target_env = self._command_for_target(node, prepared)
-        plan_env = self._augment_local_env(prepared, paths)
-        plan_env.update(target_env)
+        env = dict(prepared.env)
+        env.update(target_env)
         plan = default_launch_plan(prepared)
         plan.command = command
-        plan.env = plan_env
+        plan.env = env
         return plan
 
-    def _should_suppress_stderr(self, node: NodeSpec, text: str) -> bool:
-        del node, text
-        return False
+    def plan_execution(
+        self,
+        node: NodeSpec,
+        prepared: PreparedExecution,
+        paths: ExecutionPaths,
+    ) -> LaunchPlan:
+        return self._resolve_launch_plan(node, prepared, paths)
 
     async def _wait_for_exit(self, wait_task: asyncio.Task[int], timeout: float) -> bool:
         if wait_task.done():
@@ -137,14 +138,12 @@ class LocalRunner:
             process.kill()
         await self._wait_for_exit(wait_task, self._TERMINATE_GRACE_SECONDS)
 
-    async def _consume_stream(self, node: NodeSpec, stream, stream_name: str, buffer: list[str], on_output: StreamCallback) -> None:
+    async def _consume_stream(self, stream, stream_name: str, buffer: list[str], on_output: StreamCallback) -> None:
         while True:
             line = await stream.readline()
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip("\n")
-            if stream_name == "stderr" and self._should_suppress_stderr(node, text):
-                continue
             buffer.append(text)
             await on_output(stream_name, text)
 
@@ -158,21 +157,19 @@ class LocalRunner:
     ) -> RawExecutionResult:
         materialize_runtime_files(paths.host_runtime_dir, prepared.runtime_files)
         ensure_dir(Path(prepared.cwd))
-        launch_env = self._augment_local_env(prepared, paths)
-        command, target_env = self._command_for_target(node, prepared)
-        launch_env.update(target_env)
+        plan = self._resolve_launch_plan(node, prepared, paths)
         env = os.environ.copy()
-        env.update(launch_env)
+        env.update(plan.env)
         process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=prepared.cwd,
+            *(plan.command or []),
+            cwd=plan.cwd,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE if prepared.stdin is not None else asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if plan.stdin is not None else asyncio.subprocess.DEVNULL,
         )
-        if prepared.stdin is not None and process.stdin is not None:
-            process.stdin.write(prepared.stdin.encode("utf-8"))
+        if plan.stdin is not None and process.stdin is not None:
+            process.stdin.write(plan.stdin.encode("utf-8"))
             await process.stdin.drain()
             process.stdin.close()
         elif process.stdin is not None:
@@ -180,8 +177,8 @@ class LocalRunner:
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
-        stdout_task = asyncio.create_task(self._consume_stream(node, process.stdout, "stdout", stdout_lines, on_output))
-        stderr_task = asyncio.create_task(self._consume_stream(node, process.stderr, "stderr", stderr_lines, on_output))
+        stdout_task = asyncio.create_task(self._consume_stream(process.stdout, "stdout", stdout_lines, on_output))
+        stderr_task = asyncio.create_task(self._consume_stream(process.stderr, "stderr", stderr_lines, on_output))
         wait_task = asyncio.create_task(process.wait())
         timed_out = False
         cancelled = False

@@ -21,7 +21,6 @@ from agentflow.node_executor import NodeExecutionOutcome, NodeExecutor
 from agentflow.periodic_scheduler import PeriodicScheduler
 from agentflow.run_lifecycle import build_resumed_run, copy_resume_artifacts, finalize_cancelled_queued_run
 from agentflow.run_state import PeriodicNodeRuntimeState, RunStateRegistry
-from agentflow.runtime_state import NodeRuntimeState
 from agentflow.runner import LocalRunner, Runner
 from agentflow.scratchboard_manager import ScratchboardManager
 from agentflow.specs import (
@@ -73,33 +72,6 @@ class Orchestrator:
     def __post_init__(self) -> None:
         self._run_slots = threading.Semaphore(self.max_concurrent_runs)
 
-    def _node_runtime_state(self, run_id: str, node_id: str) -> NodeRuntimeState:
-        return self._run_state.runtime_state(run_id, node_id)
-
-    def _runtime_states_for_run(self, run_id: str) -> dict[str, NodeRuntimeState]:
-        return self._run_state.runtime_states_for_run(run_id)
-
-    def _run_cancel_flag(self, run_id: str) -> threading.Event:
-        return self._run_state.run_cancel_flag(run_id)
-
-    def _run_finished_event(self, run_id: str) -> threading.Event | None:
-        return self._run_state.run_finished_event(run_id)
-
-    def _mark_run_finished(self, run_id: str) -> None:
-        self._run_state.mark_finished(run_id)
-
-    def _request_node_cancel(self, run_id: str, node_id: str) -> None:
-        self._run_state.request_node_cancel(run_id, node_id)
-
-    def _discard_node_cancel(self, run_id: str, node_id: str) -> None:
-        self._run_state.discard_node_cancel(run_id, node_id)
-
-    def _queue_node_rerun(self, run_id: str, node_id: str) -> None:
-        self._run_state.queue_node_rerun(run_id, node_id)
-
-    def _consume_pending_node_rerun(self, run_id: str, node_id: str) -> bool:
-        return self._run_state.consume_pending_node_rerun(run_id, node_id)
-
     def _clear_run_control_state(self, run_id: str) -> None:
         self._run_state.clear_run(run_id)
         self.scratchboards.clear_run(run_id)
@@ -108,9 +80,7 @@ class Orchestrator:
         return PeriodicScheduler(
             store=self.store,
             publish=self._publish,
-            node_runtime_state=self._node_runtime_state,
-            request_node_cancel=self._request_node_cancel,
-            queue_node_rerun=self._queue_node_rerun,
+            run_state=self._run_state,
         )
 
     def _node_executor(self) -> NodeExecutor:
@@ -121,8 +91,8 @@ class Orchestrator:
             worktrees=self.worktrees,
             scratchboards=self.scratchboards,
             publish=self._publish,
-            node_runtime_state=self._node_runtime_state,
-            runtime_states_for_run=self._runtime_states_for_run,
+            node_runtime_state=self._run_state.runtime_state,
+            runtime_states_for_run=self._run_state.runtime_states_for_run,
             should_cancel=self._should_cancel,
             should_cancel_node=self._should_cancel_node,
         )
@@ -343,7 +313,7 @@ class Orchestrator:
             state.next_tick_at = state.last_tick_started_mono + node.schedule.every_seconds
         seconds_until_next_tick = max(state.next_tick_at - loop.time(), 0.0)
         next_tick_at = datetime.now(timezone.utc) + timedelta(seconds=seconds_until_next_tick)
-        runtime_state = self._node_runtime_state(run_id, node_id)
+        runtime_state = self._run_state.runtime_state(run_id, node_id)
         runtime_state.next_scheduled_at = next_tick_at.isoformat()
         remaining.add(node_id)
         await self._publish(
@@ -417,13 +387,13 @@ class Orchestrator:
         if (
             record.nodes[node_id].status not in _TERMINAL_NODE_STATUSES
             or self._should_cancel(run_id)
-            or not self._consume_pending_node_rerun(run_id, node_id)
+            or not self._run_state.consume_pending_node_rerun(run_id, node_id)
         ):
             return
 
         record.nodes[node_id].status = NodeStatus.PENDING
         record.nodes[node_id].finished_at = None
-        self._node_runtime_state(run_id, node_id).next_scheduled_at = None
+        self._run_state.runtime_state(run_id, node_id).next_scheduled_at = None
         remaining.add(node_id)
         await self._publish(run_id, "node_rerun_queued", node_id=node_id)
         await self.store.persist_run(run_id)
@@ -533,7 +503,7 @@ class Orchestrator:
         tick_started_at = utcnow_iso()
         state.last_tick_started_at = tick_started_at
         state.last_tick_started_mono = loop.time()
-        runtime_state = self._node_runtime_state(run_id, node_id)
+        runtime_state = self._run_state.runtime_state(run_id, node_id)
         record.nodes[node_id].tick_count = state.tick_count
         runtime_state.last_tick_started_at = tick_started_at
         runtime_state.next_scheduled_at = None
@@ -564,7 +534,7 @@ class Orchestrator:
             task = in_progress.pop(node_id)
             outcome = await task
             node = node_map[node_id]
-            self._discard_node_cancel(run_id, node_id)
+            self._run_state.discard_node_cancel(run_id, node_id)
 
             if node.schedule is not None:
                 await self._handle_periodic_completion(
@@ -637,7 +607,7 @@ class Orchestrator:
             finally:
                 if acquired:
                     self._run_slots.release()
-                self._mark_run_finished(run_id)
+                self._run_state.mark_finished(run_id)
 
         threading.Thread(target=_background, name=f"agentflow-{run_id}", daemon=True).start()
 
@@ -648,8 +618,8 @@ class Orchestrator:
             run_child=self.run,
             publish=self._publish,
             should_cancel=self._should_cancel,
-            run_cancel_flag=self._run_cancel_flag,
-            mark_run_finished=self._mark_run_finished,
+            run_cancel_flag=self._run_state.run_cancel_flag,
+            mark_run_finished=self._run_state.mark_finished,
             clear_run_control_state=self._clear_run_control_state,
         ).run(parent_run_id)
 
@@ -682,7 +652,7 @@ class Orchestrator:
             while True:
                 record = self.store.get_run(run_id)
                 if record.status in terminal:
-                    finished = self._run_finished_event(run_id)
+                    finished = self._run_state.run_finished_event(run_id)
                     if finished is None or finished.is_set():
                         return record
                 await asyncio.sleep(0.05)
@@ -699,7 +669,7 @@ class Orchestrator:
         """
 
         record = self.store.get_run(run_id)
-        flag = self._run_cancel_flag(run_id)
+        flag = self._run_state.run_cancel_flag(run_id)
         flag.set()
         await self.store.request_cancel(run_id)
         if record.status == RunStatus.QUEUED:
@@ -747,7 +717,7 @@ class Orchestrator:
         return new_run
 
     def _should_cancel(self, run_id: str) -> bool:
-        if self._run_cancel_flag(run_id).is_set():
+        if self._run_state.run_cancel_flag(run_id).is_set():
             return True
         return self.store.cancel_requested(run_id)
 

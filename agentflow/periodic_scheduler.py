@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from agentflow.run_state import RunStateRegistry
 from agentflow.periodic import PeriodicActionEnvelope
-from agentflow.runtime_state import NodeRuntimeState
 from agentflow.specs import NodeResult, NodeStatus, PipelineSpec
 from agentflow.store import RunStore
 from agentflow.utils import utcnow_iso
@@ -25,9 +25,7 @@ PublishEvent = Callable[..., Awaitable[None]]
 class PeriodicScheduler:
     store: RunStore
     publish: PublishEvent
-    node_runtime_state: Callable[[str, str], NodeRuntimeState]
-    request_node_cancel: Callable[[str, str], None]
-    queue_node_rerun: Callable[[str, str], None]
+    run_state: RunStateRegistry
 
     def fanout_group_settled(self, pipeline: PipelineSpec, results: dict[str, NodeResult], group_id: str) -> bool:
         member_ids = pipeline.fanouts.get(group_id, [])
@@ -42,7 +40,7 @@ class PeriodicScheduler:
             return
         result.status = NodeStatus.COMPLETED
         result.success = True if result.success is None else result.success
-        self.node_runtime_state(run_id, node_id).next_scheduled_at = None
+        self.run_state.runtime_state(run_id, node_id).next_scheduled_at = None
         result.finished_at = result.finished_at or utcnow_iso()
         await self.publish(
             run_id,
@@ -95,17 +93,17 @@ class PeriodicScheduler:
                     if target_result.status not in {NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.RETRYING}:
                         rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_running"})
                         continue
-                    self.request_node_cancel(run_id, target_node_id)
+                    self.run_state.request_node_cancel(run_id, target_node_id)
                     applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
                     continue
 
                 if target_result.status in {NodeStatus.PENDING, NodeStatus.READY}:
                     rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_started"})
                     continue
-                self.queue_node_rerun(run_id, target_node_id)
+                self.run_state.queue_node_rerun(run_id, target_node_id)
                 if target_result.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
                     target_result.status = NodeStatus.PENDING
-                    self.node_runtime_state(run_id, target_node_id).next_scheduled_at = None
+                    self.run_state.runtime_state(run_id, target_node_id).next_scheduled_at = None
                     remaining.add(target_node_id)
                 applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
 
