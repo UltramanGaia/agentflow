@@ -6,7 +6,6 @@ from typing import Any, Awaitable, Callable
 
 from agentflow.agents.registry import AdapterRegistry
 from agentflow.context import render_node_prompt
-from agentflow.launch_artifacts import launch_artifact_payload
 from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
 from agentflow.prepared import ExecutionPaths, build_execution_paths
 from agentflow.runtime_state import NodeRuntimeState
@@ -60,7 +59,16 @@ class NodeExecutor:
         await self.publish(run_id, "node_trace", node_id=node_id, trace=event.model_dump(mode="json"))
 
     async def _write_launch_artifacts(self, run_id: str, node_id: str, attempt_number: int, plan: Any) -> None:
-        payload = launch_artifact_payload(attempt_number, plan)
+        payload = {
+            "attempt": attempt_number,
+            "kind": plan.kind,
+            "command": list(plan.command) if plan.command is not None else None,
+            "env": plan.env,
+            "cwd": plan.cwd,
+            "stdin": plan.stdin,
+            "runtime_files": list(plan.runtime_files),
+            "payload": plan.payload,
+        }
         await self.store.write_artifact_json(run_id, node_id, "launch.json", payload)
         await self.store.write_artifact_json(run_id, node_id, f"launch-attempt-{attempt_number}.json", payload)
 
