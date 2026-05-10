@@ -1,3 +1,5 @@
+"""Release readiness check spanning tests, security, changelog, and gatekeeping."""
+
 from agentflow import Graph, claude, codex
 
 

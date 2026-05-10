@@ -1,3 +1,5 @@
+"""Dependency-focused audit pipeline across a fixed package list."""
+
 from agentflow import Graph, claude, codex, fanout
 
 

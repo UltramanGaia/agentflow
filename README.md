@@ -25,6 +25,19 @@ pip install -e .[dev]
 
 ## Quick Start
 
+The recommended workflow is:
+
+1. Read a close example in `examples/`.
+2. Copy it into your own `pipeline.py`.
+3. Edit it directly as normal Python.
+
+For example:
+
+```bash
+agentflow examples
+cp examples/airflow_like.py pipeline.py
+```
+
 ```python
 from agentflow import Graph, codex, claude
 
@@ -178,6 +191,8 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 
 ## Examples
 
+`examples/` is the canonical reference set. Start from one of these files, copy it, and edit it in place.
+
 | Example | What it does |
 |---|---|
 | `airflow_like.py` | Basic pipeline: plan → implement → review → merge |
@@ -189,6 +204,7 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `iterative_impl.py` | Write → review → fix cycle until LGTM |
 | `airflow_like_fuzz_batched.py` | 128-shard fanout with batch merge + periodic monitor |
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
+| `repo_sweep_batched.py` | Static large-scale repo sweep with batched reducers |
 
 ## Graph Optimization Rounds
 
@@ -222,8 +238,8 @@ agentflow evolve <run_id> -n plan   # evolve a tuned agent from prior Codex trac
 agentflow tuned-agents              # list locally registered tuned agents
 agentflow tuned-agent codex_tuned   # inspect one tuned agent
 agentflow validate pipeline.py      # check without running
-agentflow templates                  # list starter templates
-agentflow init > pipeline.py        # scaffold a starter
+agentflow examples                  # list reference examples
+cp examples/airflow_like.py pipeline.py   # copy one, then edit it
 agentflow serve                     # start the local web UI and API on 127.0.0.1:8000
 ```
 

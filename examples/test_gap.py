@@ -1,3 +1,5 @@
+"""Test gap analysis with fanout over risky modules."""
+
 from agentflow import Graph, codex, claude, fanout
 
 

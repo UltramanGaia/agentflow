@@ -1,3 +1,5 @@
+"""Iterative implementation loop that rewrites based on review feedback."""
+
 from agentflow import Graph, codex, claude
 
 with Graph("iterative-implementation", max_iterations=5) as g:

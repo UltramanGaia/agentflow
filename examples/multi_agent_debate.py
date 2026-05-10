@@ -1,3 +1,5 @@
+"""Parallel proposal and critique flow across multiple agents."""
+
 from agentflow import Graph, claude, codex
 
 

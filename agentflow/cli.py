@@ -12,15 +12,12 @@ except ImportError:  # pragma: no cover - Python < 3.11
 
     class StrEnum(str, Enum):
         pass
-from pathlib import Path
 
 import typer
 from pydantic import ValidationError
 from agentflow.defaults import (
-    bundled_templates,
-    bundled_template_names,
+    bundled_examples,
     default_smoke_pipeline_path,
-    render_bundled_template,
 )
 from agentflow.specs import (
     AgentKind,
@@ -461,18 +458,6 @@ def _stream_supports_tty_summary(*, err: bool) -> bool:
     return bool(callable(isatty) and isatty())
 
 
-def _parse_template_settings(raw_settings: list[str] | None) -> dict[str, str]:
-    settings: dict[str, str] = {}
-    for raw_setting in raw_settings or []:
-        key, separator, value = raw_setting.partition("=")
-        if separator != "=" or not key or not value:
-            raise ValueError(f"template settings must use KEY=VALUE form, got `{raw_setting}`")
-        if key in settings:
-            raise ValueError(f"template setting `{key}` was provided more than once")
-        settings[key] = value
-    return settings
-
-
 @app.command()
 def validate(path: str) -> None:
     pipeline = _load_pipeline(path)
@@ -480,94 +465,14 @@ def validate(path: str) -> None:
 
 
 @app.command()
-def templates() -> None:
-    lines = ["Bundled templates:"]
-    for template in bundled_templates():
-        details = [
-            f"source: `examples/{template.example_name}`",
-            f"use: `agentflow init --template {template.name}`",
-        ]
-        if template.support_files:
-            details.insert(0, "assets: " + ", ".join(f"`{path}`" for path in template.support_files))
-        if template.parameters:
-            details.insert(
-                0,
-                "params: " + ", ".join(f"`{parameter.name}={parameter.default}`" for parameter in template.parameters),
-            )
+def examples() -> None:
+    lines = ["Bundled examples:"]
+    for example in bundled_examples():
         lines.append(
-            f"- {template.name}: {template.description} "
-            f"({'; '.join(details)})"
+            f"- {example.name}: {example.description} "
+            f"(source: `examples/{example.name}`)"
         )
     typer.echo("\n".join(lines))
-
-
-@app.command()
-def init(
-    path: str = typer.Argument(
-        "",
-        help="Optional destination path. When omitted or `-`, print the selected template to stdout.",
-    ),
-    template: str = typer.Option(
-        "pipeline",
-        "--template",
-        "-t",
-        help=f"Bundled template name ({', '.join(bundled_template_names())}). Use `agentflow templates` to list details.",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Overwrite an existing destination file.",
-    ),
-    set_value: list[str] = typer.Option(
-        None,
-        "--set",
-        help="Template setting in KEY=VALUE form. Repeat to customize parameterized templates.",
-    ),
-) -> None:
-    try:
-        template_settings = _parse_template_settings(set_value)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--set") from exc
-
-    try:
-        rendered_template = render_bundled_template(template, values=template_settings)
-    except ValueError as exc:
-        param_hint = "--template" if template not in bundled_template_names() else "--set"
-        raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
-    support_files = rendered_template.support_files
-
-    if not path or path == "-":
-        if support_files:
-            typer.echo(
-                f"Template `{template}` includes support files and requires a destination path.",
-                err=True,
-            )
-            raise typer.Exit(code=1)
-        typer.echo(rendered_template.content, nl=False)
-        return
-
-    destination = Path(path).expanduser()
-    if destination.exists() and destination.is_dir():
-        typer.echo(f"Destination `{destination}` is a directory.", err=True)
-        raise typer.Exit(code=1)
-    if destination.exists() and not force:
-        typer.echo(f"Destination `{destination}` already exists. Use `--force` to overwrite it.", err=True)
-        raise typer.Exit(code=1)
-
-    support_copies: list[tuple[str, str, Path]] = []
-    for support_file in support_files:
-        target = destination.parent / support_file.relative_path
-        support_copies.append((support_file.relative_path, support_file.content, target))
-        if target.exists() and not force:
-            typer.echo(f"Destination `{target}` already exists. Use `--force` to overwrite it.", err=True)
-            raise typer.Exit(code=1)
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(rendered_template.content, encoding="utf-8")
-    for _relative_path, content, target in support_copies:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    typer.echo(f"Wrote `{template}` template to `{destination}`.")
 
 
 @app.command()

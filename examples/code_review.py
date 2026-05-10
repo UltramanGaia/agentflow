@@ -1,3 +1,5 @@
+"""Independent multi-file code review with fanout and final synthesis."""
+
 from agentflow import Graph, claude, codex, fanout
 
 

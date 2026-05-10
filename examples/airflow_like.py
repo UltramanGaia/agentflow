@@ -1,3 +1,5 @@
+"""Smallest Python-authored Codex/Claude DAG reference."""
+
 from agentflow import Graph, claude, codex
 
 
