@@ -23,14 +23,10 @@ _NODE_DEFAULT_DICT_MERGE_FIELDS: set[str] = set()
 
 def _local_target_defaults_payload(value: Any) -> dict[str, Any] | None:
     if isinstance(value, LocalTarget):
-        payload = value.model_dump(mode="python")
-    elif isinstance(value, dict):
-        payload = dict(value)
-    else:
-        return None
-    if payload.get("kind") == "local":
-        payload.pop("kind", None)
-    return payload
+        return value.model_dump(mode="python")
+    if isinstance(value, dict):
+        return dict(value)
+    return None
 
 
 def _node_default_payload(

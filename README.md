@@ -23,6 +23,12 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e .[dev]
 ```
 
+## Breaking Changes
+
+- `target.kind` has been removed from the pipeline schema.
+- Use `target={"cwd": ...}` instead of `target={"kind": "local", "cwd": ...}`.
+- Pipelines that still send `kind: "local"` will now fail validation instead of being silently normalized.
+
 ## Quick Start
 
 The recommended workflow is:

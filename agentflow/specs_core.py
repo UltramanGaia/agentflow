@@ -103,20 +103,6 @@ class LocalTarget(BaseModel):
 
     cwd: str | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def validate_legacy_kind(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        kind = value.get("kind")
-        if kind is None:
-            return value
-        if kind != "local":
-            raise ValueError("`target.kind` currently only supports `local`")
-        normalized = dict(value)
-        normalized.pop("kind", None)
-        return normalized
-
 
 TargetSpec = LocalTarget
 

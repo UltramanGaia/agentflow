@@ -167,10 +167,7 @@ class Graph:
 def _normalize_local_target(value: Any) -> Any:
     if not isinstance(value, dict):
         return deepcopy(value)
-    normalized = deepcopy(value)
-    if normalized.get("kind") == "local":
-        normalized.pop("kind", None)
-    return normalized
+    return deepcopy(value)
 
 
 def _normalize_node_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
