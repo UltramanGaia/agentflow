@@ -19,7 +19,12 @@ from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.graph_optimization_session import GraphOptimizationSession
 from agentflow.node_executor import NodeExecutionOutcome, NodeExecutor
 from agentflow.periodic_scheduler import PeriodicScheduler
-from agentflow.run_lifecycle import build_resumed_run, copy_resume_artifacts, finalize_cancelled_queued_run
+from agentflow.run_lifecycle import (
+    build_rerun_node_run,
+    build_resumed_run,
+    copy_resume_artifacts,
+    finalize_cancelled_queued_run,
+)
 from agentflow.run_state import PeriodicNodeRuntimeState, RunStateRegistry
 from agentflow.runner import LocalRunner, Runner
 from agentflow.scratchboard_manager import ScratchboardManager
@@ -716,6 +721,37 @@ class Orchestrator:
         self._start_background(new_run_id, lambda: self.run(new_run_id))
         return new_run
 
+    async def rerun_node(self, run_id: str, node_id: str) -> RunRecord:
+        record = self.store.get_run(run_id)
+        if node_id not in record.nodes:
+            raise KeyError(f"Node `{node_id}` not found in run `{run_id}`.")
+
+        if record.status in {RunStatus.RUNNING, RunStatus.PENDING}:
+            if record.nodes[node_id].status not in _TERMINAL_NODE_STATUSES:
+                raise ValueError(f"Node `{node_id}` is not in a terminal state.")
+            self._run_state.queue_node_rerun(run_id, node_id)
+            await self._publish(run_id, "node_rerun_requested", node_id=node_id)
+            return record
+
+        if record.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ValueError(f"Run `{run_id}` does not support node reruns in status `{record.status.value}`.")
+
+        rerun_nodes = self._downstream_nodes(record.pipeline, node_id)
+        new_run_id = self.store.new_run_id()
+        new_run = build_rerun_node_run(record, new_run_id=new_run_id, rerun_nodes=rerun_nodes)
+        self._initialize_run_tracking(new_run_id)
+        await self.store.create_run(new_run)
+        copy_resume_artifacts(self.store, source_run_id=run_id, resumed_run=new_run)
+        await self._publish(
+            new_run_id,
+            "run_queued",
+            pipeline=new_run.pipeline.model_dump(mode="json"),
+            rerun_from=run_id,
+            rerun_node=node_id,
+        )
+        self._start_background(new_run_id, lambda: self.run(new_run_id))
+        return new_run
+
     def _should_cancel(self, run_id: str) -> bool:
         if self._run_state.run_cancel_flag(run_id).is_set():
             return True
@@ -889,3 +925,20 @@ class Orchestrator:
         await self.store.persist_run(run_id)
         self._clear_run_control_state(run_id)
         return record
+
+    @staticmethod
+    def _downstream_nodes(pipeline: PipelineSpec, start_node_id: str) -> set[str]:
+        reverse_edges: dict[str, list[str]] = {}
+        for node in pipeline.nodes:
+            for dep in node.depends_on:
+                reverse_edges.setdefault(dep, []).append(node.id)
+
+        pending = [start_node_id]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(reverse_edges.get(current, []))
+        return seen

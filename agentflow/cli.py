@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 try:
     from enum import StrEnum
@@ -720,6 +721,33 @@ def smoke(
 ) -> None:
     selected_path = path or default_smoke_pipeline_path()
     _run_pipeline(_load_pipeline(selected_path), runs_dir, max_concurrent_runs, output)
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind host."),
+    port: int = typer.Option(8000, min=1, max=65535, help="Bind port."),
+    workspace_dir: str = typer.Option(".agentflow", envvar="AGENTFLOW_WORKSPACE_DIR"),
+    runs_dir: str = typer.Option("", envvar="AGENTFLOW_RUNS_DIR", help="Override runs directory."),
+    max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
+) -> None:
+    try:
+        import uvicorn
+        from server.api.app import create_app
+    except ModuleNotFoundError as exc:
+        typer.echo(
+            "Web server dependencies are missing. Install project dependencies including `fastapi` and `uvicorn`.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    workspace_path = Path(workspace_dir).expanduser()
+    app_instance = create_app(
+        workspace_dir=workspace_path,
+        runs_dir=(runs_dir or str(workspace_path / "runs")),
+        max_concurrent_runs=max_concurrent_runs,
+    )
+    uvicorn.run(app_instance, host=host, port=port)
 
 
 def main() -> None:

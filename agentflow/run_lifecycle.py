@@ -54,3 +54,25 @@ def finalize_cancelled_queued_run(record: RunRecord) -> RunRecord:
             node.status = NodeStatus.CANCELLED
             node.finished_at = record.finished_at
     return record
+
+
+def build_rerun_node_run(
+    old_record: RunRecord,
+    *,
+    new_run_id: str,
+    rerun_nodes: set[str],
+) -> RunRecord:
+    nodes: dict[str, NodeResult] = {}
+    for node in old_record.pipeline.nodes:
+        old_node = old_record.nodes.get(node.id)
+        if node.id not in rerun_nodes and old_node is not None and old_node.status == NodeStatus.COMPLETED:
+            nodes[node.id] = old_node.model_copy()
+        else:
+            nodes[node.id] = NodeResult(node_id=node.id, status=NodeStatus.PENDING)
+
+    return RunRecord(
+        id=new_run_id,
+        status=RunStatus.QUEUED,
+        pipeline=old_record.pipeline,
+        nodes=nodes,
+    )
