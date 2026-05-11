@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { vi } from "vitest";
 import { StatusBadge } from "./status/StatusBadge";
+import { AgentNode } from "./graph/AgentNode";
 import { EmptyState, ErrorState, LoadingState } from "./feedback/States";
+
+vi.mock("reactflow", () => ({
+  Handle: () => <span data-testid="rf-handle" />,
+  Position: { Left: "left", Right: "right" },
+}));
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({
@@ -78,5 +86,30 @@ describe("LoadingState", () => {
     render(<LoadingState />, { wrapper });
     
     expect(screen.getByText("Loading...")).toBeInTheDocument();
+  });
+});
+
+describe("AgentNode", () => {
+  it("opens detail action from the node card", async () => {
+    const user = userEvent.setup();
+    const onInspect = vi.fn();
+
+    render(
+      <AgentNode
+        data={{ title: "apply", agent: "claude", status: "failed", onInspect }}
+        dragging={false}
+        id="apply"
+        isConnectable
+        selected={false}
+        type="agentNode"
+        xPos={0}
+        yPos={0}
+        zIndex={0}
+      />,
+      { wrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Inspect apply" }));
+    expect(onInspect).toHaveBeenCalledTimes(1);
   });
 });

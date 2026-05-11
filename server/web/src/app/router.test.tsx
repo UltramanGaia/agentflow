@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppRouter } from "./router";
 
@@ -44,7 +43,7 @@ describe("AppRouter", () => {
     render(<AppRouter />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Runs", level: 2 })).toBeInTheDocument();
     });
   });
 
@@ -52,8 +51,7 @@ describe("AppRouter", () => {
     render(<AppRouter />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      // AppShell should have the AgentFlow title
-      expect(screen.getByText("AgentFlow")).toBeInTheDocument();
+      expect(screen.getByText("No run selected")).toBeInTheDocument();
     });
   });
 });

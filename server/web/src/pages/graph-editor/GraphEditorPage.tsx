@@ -191,21 +191,32 @@ function GraphEditorPageInner() {
   });
 
   useEffect(() => {
+    function isEditableTarget(target: EventTarget | null) {
+      const element = target as HTMLElement | null;
+      if (!element) {
+        return false;
+      }
+      return (
+        element.tagName === "INPUT" ||
+        element.tagName === "TEXTAREA" ||
+        element.isContentEditable ||
+        Boolean(element.closest(".monaco-editor"))
+      );
+    }
+
     function onKeyDown(event: KeyboardEvent) {
       const isMetaSave = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
-      const isMetaAdd = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n";
+      const isQuickAdd = !event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.key.toLowerCase() === "a";
       const isDelete = event.key === "Delete" || event.key === "Backspace";
       const isFitView = event.key.toLowerCase() === "f" && event.shiftKey;
       if (isMetaSave) {
         event.preventDefault();
         void saveMutation.mutateAsync();
-      } else if (isMetaAdd) {
+      } else if (isQuickAdd && !isEditableTarget(event.target)) {
         event.preventDefault();
         addNodeWithTemplate({ id: newNodeId.trim() || undefined, agent: newNodeAgent });
       } else if (isDelete && selectedNodeId) {
-        const target = event.target as HTMLElement | null;
-        const editableTag = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
-        if (!editableTag) {
+        if (!isEditableTarget(event.target)) {
           event.preventDefault();
           removeSelectedNode();
         }
@@ -238,18 +249,24 @@ function GraphEditorPageInner() {
         meta={<span className={`status-badge ${dirty ? "status-running" : "status-completed"}`}>{dirty ? "dirty" : "saved"}</span>}
         actions={
           <>
-            <button className="button primary" onClick={() => saveMutation.mutate()} type="button">
-              Save
+            <button className="button primary" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()} type="button">
+              {saveMutation.isPending ? "Saving..." : "Save"}
             </button>
-            <button className="button" onClick={() => validateMutation.mutate()} type="button">
-              Validate
+            <button className="button" disabled={validateMutation.isPending} onClick={() => validateMutation.mutate()} type="button">
+              {validateMutation.isPending ? "Validating..." : "Validate"}
             </button>
-            <button className="button" onClick={() => runMutation.mutate()} type="button">
-              Run
+            <button className="button" disabled={runMutation.isPending} onClick={() => runMutation.mutate()} type="button">
+              {runMutation.isPending ? "Starting..." : "Run"}
             </button>
           </>
         }
       />
+
+      {dirty ? (
+        <InlineNotice tone="warning">
+          You have unsaved graph changes. Save before leaving or starting a comparison run.
+        </InlineNotice>
+      ) : null}
 
       <SplitPane
         aside={
@@ -337,7 +354,7 @@ function GraphEditorPageInner() {
                 <button className="button" onClick={() => reactFlow.fitView({ padding: 0.18, duration: 240 })} type="button">
                   Fit view
                 </button>
-                <span className="muted">Shortcuts: Ctrl/Cmd+S save, Ctrl/Cmd+N add node, Delete remove, Shift+F fit</span>
+                <span className="muted">Shortcuts: Ctrl/Cmd+S save, Shift+A add node, Delete remove, Shift+F fit</span>
               </div>
             }
           >
@@ -397,8 +414,13 @@ function GraphEditorPageInner() {
                   onChange={(event) => setImportPath(event.target.value)}
                 />
               </label>
-              <button className="button" disabled={!importPath.trim()} onClick={() => importMutation.mutate(importPath)} type="button">
-                Import graph
+              <button
+                className="button"
+                disabled={!importPath.trim() || importMutation.isPending}
+                onClick={() => importMutation.mutate(importPath)}
+                type="button"
+              >
+                {importMutation.isPending ? "Importing..." : "Import graph"}
               </button>
             </PageSection>
 
@@ -413,8 +435,13 @@ function GraphEditorPageInner() {
             </PageSection>
 
             <PageSection title="Export" description="Generate Python after the graph has a persisted id.">
-              <button className="button" disabled={graphId === "new"} onClick={() => exportMutation.mutate()} type="button">
-                Export Python
+              <button
+                className="button"
+                disabled={graphId === "new" || exportMutation.isPending}
+                onClick={() => exportMutation.mutate()}
+                type="button"
+              >
+                {exportMutation.isPending ? "Exporting..." : "Export Python"}
               </button>
               {exportContent ? <pre className="code-block">{exportContent}</pre> : null}
             </PageSection>

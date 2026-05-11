@@ -1,8 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { GraphsPage } from "./graphs/GraphsPage";
 import { RunsPage } from "./runs/RunsPage";
 
 function createWrapper() {
@@ -41,14 +40,16 @@ const mockRuns = [
   },
 ];
 
-const mockGraphs = [
-  {
-    id: "graph-1",
-    name: "My Graph",
-    updated_at: "2024-01-01T00:00:00Z",
-    node_count: 3,
+const mockRunDetail = {
+  run: {
+    id: "run-2",
+    status: "failed",
+    pipeline: { name: "failing-pipeline", nodes: [] },
+    nodes: {},
   },
-];
+  graph: { nodes: [], edges: [] },
+  events: [],
+};
 
 describe("RunsPage", () => {
   beforeEach(() => {
@@ -77,10 +78,10 @@ describe("RunsPage", () => {
     });
   }
 
-  it("renders runs and graphs from API", async () => {
+  it("renders runs from API", async () => {
     mockFetch({
       "/api/runs": mockRuns,
-      "/api/graphs": mockGraphs,
+      "/api/runs/run-2": mockRunDetail,
     });
 
     render(<RunsPage />, { wrapper: createWrapper() });
@@ -88,43 +89,62 @@ describe("RunsPage", () => {
     await waitFor(() => {
       expect(screen.getAllByText("test-pipeline").length).toBeGreaterThan(0);
     });
+  });
+
+  it("renders newest runs first in the sidebar", async () => {
+    mockFetch({
+      "/api/runs": mockRuns,
+      "/api/runs/run-2": mockRunDetail,
+    });
+
+    const { container } = render(<RunsPage />, { wrapper: createWrapper() });
+
     await waitFor(() => {
-      expect(screen.getByText("My Graph")).toBeInTheDocument();
+      const titles = Array.from(container.querySelectorAll(".sidebar-list .run-card-title")).map((node) => node.textContent);
+      expect(titles).toEqual(["failing-pipeline", "test-pipeline"]);
     });
   });
 
-  it("shows summary cards with correct counts", async () => {
+  it("shows selected run graph workspace", async () => {
     mockFetch({
       "/api/runs": mockRuns,
-      "/api/graphs": mockGraphs,
+      "/api/runs/run-2": {
+        run: { id: "run-2", status: "failed", pipeline: { name: "failing-pipeline", nodes: [] }, nodes: {} },
+        graph: {
+          nodes: [
+            {
+              id: "apply",
+              agent: "codex",
+              prompt: "",
+              depends_on: [],
+              status: "failed",
+              started_at: null,
+              finished_at: null,
+              exit_code: 1,
+              final_response: null,
+              output: null,
+              tick_count: 0,
+              attempts: [],
+              artifacts: [],
+            },
+          ],
+          edges: [],
+        },
+        events: [],
+      },
     });
 
     render(<RunsPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      const totalRunsCard = screen.getByText("Total runs").closest(".metric-card");
-      expect(totalRunsCard).not.toBeNull();
-      expect(within(totalRunsCard!).getByText("2")).toBeInTheDocument();
-    });
-  });
-
-  it("shows failed node information", async () => {
-    mockFetch({
-      "/api/runs": mockRuns,
-      "/api/graphs": mockGraphs,
-    });
-
-    render(<RunsPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getAllByText(/failed: apply/).length).toBeGreaterThan(0);
+      expect(screen.getByText("Runtime map")).toBeInTheDocument();
+      expect(screen.getAllByText("failing-pipeline").length).toBeGreaterThan(0);
     });
   });
 
   it("shows empty states when no data", async () => {
     mockFetch({
       "/api/runs": [],
-      "/api/graphs": [],
     });
 
     render(<RunsPage />, { wrapper: createWrapper() });
@@ -132,85 +152,19 @@ describe("RunsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("No runs yet")).toBeInTheDocument();
     });
-    await waitFor(() => {
-      expect(screen.getByText("No graphs saved")).toBeInTheDocument();
-    });
   });
 
   it("shows error state when API fails", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({
+    vi.mocked(fetch).mockResolvedValue({
       ok: false,
       status: 500,
       json: () => Promise.resolve({ detail: "Server error" }),
-    } as Response);
-
-    // Graphs request needs to succeed or fail too
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve([]),
     } as Response);
 
     render(<RunsPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByText("Server error")).toBeInTheDocument();
-    });
-  });
-});
-
-describe("GraphsPage", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function mockFetch(responses: Record<string, unknown>) {
-    vi.mocked(fetch).mockImplementation(async (input) => {
-      const url = typeof input === "string" ? input : input.toString();
-      for (const [path, data] of Object.entries(responses)) {
-        if (url === path) {
-          return {
-            ok: true,
-            json: () => Promise.resolve(data),
-          } as Response;
-        }
-      }
-      return {
-        ok: true,
-        json: () => Promise.resolve([]),
-      } as Response;
-    });
-  }
-
-  it("renders saved graphs and latest failing run", async () => {
-    mockFetch({
-      "/api/runs": mockRuns,
-      "/api/graphs": mockGraphs,
-    });
-
-    render(<GraphsPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Graphs" })).toBeInTheDocument();
-    });
-    expect(screen.getAllByText("My Graph").length).toBeGreaterThan(0);
-    expect(screen.getByText("Latest failing run")).toBeInTheDocument();
-    expect(screen.getAllByText("failing-pipeline").length).toBeGreaterThan(0);
-  });
-
-  it("shows empty graph state", async () => {
-    mockFetch({
-      "/api/runs": [],
-      "/api/graphs": [],
-    });
-
-    render(<GraphsPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByText("No graphs saved")).toBeInTheDocument();
     });
   });
 });

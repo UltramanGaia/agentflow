@@ -42,6 +42,7 @@ class NodeSpec(BaseModel):
     timeout_seconds: int | None = Field(default=None, gt=0)
     executable: str | None = None
     extra_args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
     description: str | None = None
     skip_if: list[SkipCriterion] = Field(default_factory=list)
     success_criteria: list[SuccessCriterion] = Field(default_factory=list)

@@ -28,15 +28,20 @@ vi.mock("reactflow", async () => {
       onNodeClick,
       children,
     }: {
-      nodes?: Array<{ id: string; data?: { title?: string; agent?: string; status?: string } }>;
+      nodes?: Array<{ id: string; data?: { title?: string; agent?: string; status?: string; onInspect?: () => void } }>;
       onNodeClick?: (event: unknown, node: { id: string }) => void;
       children?: ReactNode;
     }) => (
       <div data-testid="reactflow">
         {nodes.map((node) => (
-          <button key={node.id} onClick={() => onNodeClick?.({}, { id: node.id })} type="button">
-            {node.data?.title ?? node.id}
-          </button>
+          <div key={node.id}>
+            <button onClick={() => onNodeClick?.({}, { id: node.id })} type="button">
+              {node.data?.title ?? node.id}
+            </button>
+            <button aria-label={`Inspect ${node.data?.title ?? node.id}`} onClick={() => node.data?.onInspect?.()} type="button">
+              Details
+            </button>
+          </div>
         ))}
         {children}
       </div>
@@ -189,6 +194,7 @@ describe("RunDetailPage", () => {
   });
 
   it("defaults to the failed node and loads its log artifact", async () => {
+    const user = userEvent.setup();
     vi.mocked(fetch).mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url === "/api/runs/run-123") {
@@ -209,6 +215,7 @@ describe("RunDetailPage", () => {
     });
 
     expect(screen.getAllByText("apply").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Inspect apply" }));
     await waitFor(() => {
       expect(screen.getByText("traceback line")).toBeInTheDocument();
     });
@@ -233,13 +240,47 @@ describe("RunDetailPage", () => {
       wrapper: createWrapper("/runs/run-123", "/runs/:runId"),
     });
 
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Deploy pipeline" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Inspect apply" }));
     await waitFor(() => expect(screen.getByText("traceback line")).toBeInTheDocument());
-    await user.click(screen.getByRole("button", { name: "Events" }));
+    await user.click(screen.getAllByRole("button", { name: "Events" })[0]!);
 
     await waitFor(() => {
       expect(screen.getAllByText("node.failed").length).toBeGreaterThan(0);
     });
     expect(screen.getAllByText(/apply/).length).toBeGreaterThan(0);
+  });
+
+  it("opens a node dialog from the node detail button", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/runs/run-123") {
+        return jsonResponse(runDetailPayload);
+      }
+      if (url === "/api/runs/run-123/nodes/apply/artifacts/stderr.log") {
+        return textResponse("traceback line");
+      }
+      return jsonResponse({});
+    });
+
+    render(<RunDetailPage />, {
+      wrapper: createWrapper("/runs/run-123", "/runs/:runId"),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Deploy pipeline" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Inspect apply" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+    expect(screen.getByText("apply diagnostics")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("traceback line")).toBeInTheDocument();
+    });
   });
 });
 
