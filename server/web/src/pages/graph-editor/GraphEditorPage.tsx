@@ -72,7 +72,7 @@ function GraphEditorPageInner() {
   const [editorMode, setEditorMode] = useState<"structured" | "advanced">("structured");
   const [importPath, setImportPath] = useState("");
   const [newNodeId, setNewNodeId] = useState("");
-  const [newNodeAgent, setNewNodeAgent] = useState("codex");
+  const [newNodeAgent, setNewNodeAgent] = useState("gaia");
   const [advancedPipelineJson, setAdvancedPipelineJson] = useState("");
   const [advancedNodeJson, setAdvancedNodeJson] = useState("");
   const [pipelineParseError, setPipelineParseError] = useState<string | null>(null);
@@ -383,9 +383,6 @@ function GraphEditorPageInner() {
               <label className="field">
                 <span className="field-label">New node agent</span>
                 <select value={newNodeAgent} onChange={(event) => setNewNodeAgent(event.target.value)}>
-                  <option value="codex">codex</option>
-                  <option value="claude">claude</option>
-                  <option value="pi">pi</option>
                   <option value="gaia">gaia</option>
                 </select>
               </label>

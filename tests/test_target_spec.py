@@ -8,7 +8,7 @@ def test_local_target_accepts_current_shape() -> None:
     node = NodeSpec.model_validate(
         {
             "id": "node",
-            "agent": "codex",
+            "agent": "gaia",
             "prompt": "Inspect the repo.",
             "target": {"cwd": "."},
         }
@@ -22,7 +22,7 @@ def test_local_target_rejects_legacy_kind_field() -> None:
         NodeSpec.model_validate(
             {
                 "id": "node",
-                "agent": "codex",
+                "agent": "gaia",
                 "prompt": "Inspect the repo.",
                 "target": {"kind": "local", "cwd": "."},
             }

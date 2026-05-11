@@ -215,10 +215,8 @@ def _node_text_candidates(node: NodeResult, artifact_dir: Path | None = None) ->
 def _provider_error_subject(pipeline_node: NodeSpec | None) -> str:
     agent_name = _status_value(pipeline_node.agent).strip().lower() if pipeline_node is not None else ""
 
-    if agent_name == "codex":
-        return "Codex"
-    if agent_name == "claude":
-        return "Claude"
+    if agent_name == "gaia":
+        return "Gaia"
     return "The agent"
 
 
@@ -597,8 +595,8 @@ def resume(
 def evolve(
     run_id: str,
     node: list[str] = typer.Option(..., "--node", "-n", help="Source node ids to harvest traces from."),
-    target: str = typer.Option("codex", help="Base agent kind to evolve."),
-    optimizer: str = typer.Option("codex", help="Optimizer agent kind to patch the cloned repo."),
+    target: str = typer.Option("gaia", help="Base agent kind to evolve."),
+    optimizer: str = typer.Option("gaia", help="Optimizer agent kind to patch the cloned repo."),
     profile: str = typer.Option("", "--profile", help="Tuner profile name under `agent_tuner/`. Defaults to `target`."),
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     output: OutputFormat = typer.Option(

@@ -305,8 +305,8 @@ class TestExpandCompactNodes:
         payload = {
             "name": "test",
             "nodes": [
-                {"id": "a", "agent": "codex", "prompt": "do a"},
-                {"id": "b", "agent": "codex", "prompt": "do b", "depends_on": ["a"]},
+                {"id": "a", "agent": "gaia", "prompt": "do a"},
+                {"id": "b", "agent": "gaia", "prompt": "do b", "depends_on": ["a"]},
             ],
         }
         result = expand_compact_nodes(payload)
@@ -316,10 +316,10 @@ class TestExpandCompactNodes:
         payload = {
             "name": "test",
             "nodes": [
-                {"id": "scan", "agent": "codex", "prompt": "scan"},
+                {"id": "scan", "agent": "gaia", "prompt": "scan"},
                 {
                     "id": "fuzzer",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "fuzz {{ item.number }}",
                     "fanout": {"count": 4},
                 },
@@ -337,7 +337,7 @@ class TestExpandCompactNodes:
             "nodes": [
                 {
                     "id": "review",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "review {{ item.file }}",
                     "fanout": {"values": [{"file": "api.py"}, {"file": "db.py"}]},
                 },
@@ -353,7 +353,7 @@ class TestExpandCompactNodes:
             "nodes": [
                 {
                     "id": "fuzzer",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "fuzz",
                     "fanout": {"matrix": {"target": ["a", "b"], "mode": ["asan", "ubsan"]}},
                 },
@@ -367,15 +367,15 @@ class TestExpandCompactNodes:
         payload = {
             "name": "test",
             "nodes": [
-                {"id": "init", "agent": "codex", "prompt": "init"},
+                {"id": "init", "agent": "gaia", "prompt": "init"},
                 {
                     "id": "worker",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "work",
                     "fanout": {"count": 3},
                     "depends_on": ["init"],
                 },
-                {"id": "merge", "agent": "codex", "prompt": "merge", "depends_on": ["worker"]},
+                {"id": "merge", "agent": "gaia", "prompt": "merge", "depends_on": ["worker"]},
             ],
         }
         result = expand_compact_nodes(payload)
@@ -386,8 +386,8 @@ class TestExpandCompactNodes:
         payload = {
             "name": "test",
             "nodes": [
-                {"id": "dup", "agent": "codex", "prompt": "a"},
-                {"id": "dup", "agent": "codex", "prompt": "b"},
+                {"id": "dup", "agent": "gaia", "prompt": "a"},
+                {"id": "dup", "agent": "gaia", "prompt": "b"},
             ],
         }
         with pytest.raises(ValueError, match="duplicate node ids"):
@@ -399,13 +399,13 @@ class TestExpandCompactNodes:
             "nodes": [
                 {
                     "id": "worker",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "work",
                     "fanout": {"count": 4},
                 },
                 {
                     "id": "batch_merge",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "merge {{ item.source_group }}",
                     "fanout": {"batches": {"from": "worker", "size": 2}},
                     "depends_on": ["worker"],
@@ -425,7 +425,7 @@ class TestExpandCompactNodes:
             "nodes": [
                 {
                     "id": "worker",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "work",
                     "fanout": {
                         "values": [
@@ -437,7 +437,7 @@ class TestExpandCompactNodes:
                 },
                 {
                     "id": "family_merge",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "merge by target",
                     "fanout": {"group_by": {"from": "worker", "fields": ["target"]}},
                     "depends_on": ["worker"],

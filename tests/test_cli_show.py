@@ -20,7 +20,7 @@ def _write_run_fixture(runs_dir: Path) -> str:
             nodes=[
                 NodeSpec(
                     id="scan",
-                    agent="codex",
+                    agent="gaia",
                     prompt="Scan the repo.",
                 )
             ],
@@ -46,7 +46,7 @@ def test_show_summary_output_reads_run_artifacts(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert f"Run {run_id}: failed" in result.output
-    assert "scan [codex]: failed" in result.output
+    assert "scan [gaia]: failed" in result.output
     assert "Diagnosis:" in result.output
 
 
@@ -58,4 +58,4 @@ def test_show_json_summary_output_reads_run_artifacts(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert '"id": "run-123"' in result.output
-    assert '"diagnosis": "Codex reached the provider' in result.output
+    assert '"diagnosis": "Gaia reached the provider' in result.output

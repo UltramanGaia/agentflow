@@ -1,6 +1,6 @@
 # AgentFlow
 
-Orchestrate codex, claude, pi, and gaia agents locally in dependency graphs with parallel fanout and iterative cycles.
+Orchestrate gaia agents locally in dependency graphs with parallel fanout and iterative cycles.
 
 ![AgentFlow Graph](docs/graph.png)
 *94-node pipeline: plan → 64 workers → 8 batch merges → 16 reviews → 4 review merges → synthesis*
@@ -13,7 +13,7 @@ One line:
 curl -fsSL https://raw.githubusercontent.com/shouc/agentflow/master/install.sh | bash
 ```
 
-This installs agentflow, adds it to PATH, and installs the skill for Codex and Claude Code.
+This installs agentflow, adds it to PATH, and installs the bundled skill files.
 The repository currently ships the CLI, examples, tests, and skills only.
 
 Or manually:
@@ -45,12 +45,12 @@ cp examples/airflow_like.py pipeline.py
 ```
 
 ```python
-from agentflow import Graph, codex, claude
+from agentflow import Graph, gaia
 
 with Graph("my-pipeline", concurrency=3) as g:
-    plan = codex(task_id="plan", prompt="Inspect the repo and plan the work.", tools="read_only")
-    impl = claude(task_id="impl", prompt="Implement the plan:\n{{ nodes.plan.output }}", tools="read_write")
-    review = codex(task_id="review", prompt="Review:\n{{ nodes.impl.output }}")
+    plan = gaia(task_id="plan", prompt="Inspect the repo and plan the work.", tools="read_only")
+    impl = gaia(task_id="impl", prompt="Implement the plan:\n{{ nodes.plan.output }}", tools="read_write")
+    review = gaia(task_id="review", prompt="Review:\n{{ nodes.impl.output }}")
     plan >> impl >> review
 
 print(g.to_json())
@@ -60,10 +60,10 @@ print(g.to_json())
 agentflow run pipeline.py --output summary
 ```
 
-Or just ask Codex (the agentflow skill is auto-installed):
+Or just ask your coding agent:
 
 ```bash
-codex "Use agentflow to fan out 10 codex agents, each telling a unique joke, then merge their outputs and pick the funniest one. Write the pipeline and run it."
+gaia "Use agentflow to fan out 10 gaia agents, each telling a unique joke, then merge their outputs and pick the funniest one. Write the pipeline and run it."
 ```
 
 ## Parallel Fanout
@@ -71,15 +71,15 @@ codex "Use agentflow to fan out 10 codex agents, each telling a unique joke, the
 Fan a node into many parallel copies with `fanout()`:
 
 ```python
-from agentflow import Graph, codex, fanout, merge
+from agentflow import Graph, fanout, gaia, merge
 
 with Graph("code-review", concurrency=8) as g:
-    scan = codex(task_id="scan", prompt="List the top 5 files to review.")
+    scan = gaia(task_id="scan", prompt="List the top 5 files to review.")
     review = fanout(
-        codex(task_id="review", prompt="Review {{ item.file }}:\n{{ nodes.scan.output }}"),
+        gaia(task_id="review", prompt="Review {{ item.file }}:\n{{ nodes.scan.output }}"),
         [{"file": "api.py"}, {"file": "auth.py"}, {"file": "db.py"}],
     )
-    summary = codex(task_id="summary", prompt=(
+    summary = gaia(task_id="summary", prompt=(
         "Merge findings:\n{% for r in fanouts.review.nodes %}{{ r.output }}\n{% endfor %}"
     ))
     scan >> review >> summary
@@ -99,15 +99,15 @@ Reduce with `merge(node, source, size=N)` (batch) or `merge(node, source, by=["f
 Loop until a stop condition with `on_failure`:
 
 ```python
-from agentflow import Graph, codex, claude
+from agentflow import Graph, gaia
 
 with Graph("iterative-impl", max_iterations=5) as g:
-    write = codex(
+    write = gaia(
         task_id="write",
         prompt="Write a Python email validator.\n{% if nodes.review.output %}Fix: {{ nodes.review.output }}{% endif %}",
         tools="read_write",
     )
-    review = claude(
+    review = gaia(
         task_id="review",
         prompt="Review:\n{{ nodes.write.output }}\nIf complete, say LGTM. Otherwise list issues.",
         success_criteria=[{"kind": "output_contains", "value": "LGTM"}],
@@ -118,46 +118,39 @@ with Graph("iterative-impl", max_iterations=5) as g:
 print(g.to_json())
 ```
 
-## Local & External Models via Pi
+## Gaia Models
 
-Use the `pi` coding agent as a target alongside `codex` and `claude`. Pi routes
-to Anthropic, OpenAI, Groq, Cerebras, xAI, DeepSeek, Gemini, OpenRouter, Bedrock,
-etc., and to local endpoints (LMStudio, Ollama) via its OpenAI-compatible or
-Anthropic-compatible wire protocols.
+AgentFlow now exposes a single interactive agent surface: `gaia`.
 
 ```python
-from agentflow import Graph, codex, pi
+from agentflow import Graph, gaia
 
 with Graph("mixed") as g:
-    # External: Claude via Pi
-    review = pi(
+    review = gaia(
         task_id="review",
         prompt="Review {{ nodes.impl.output }}",
-        model="anthropic/claude-sonnet-4-6:high",
+        model="sonnet-4.6",
     )
 
-    # Local: LMStudio (configure it once in ~/.pi/agent/models.json)
-    scan = pi(
+    scan = gaia(
         task_id="scan",
         prompt="Scan the repo for TODOs.",
-        model="lmstudio/qwen/qwen3.6-27b",
         tools="read_only",
     )
 ```
 
-AgentFlow assumes each underlying agent has already been configured by its own
-CLI/config files. In practice you usually only need to set `model`.
+AgentFlow assumes Gaia has already been configured in the execution environment.
 
 ## Gaia Nodes
 
 Use `gaia()` when Gaia is installed in the execution environment:
 
 ```python
-from agentflow import Graph, codex, gaia
+from agentflow import Graph, gaia
 
 with Graph("gaia-review") as g:
     scan = gaia(task_id="scan", prompt="Inspect the repo and summarize risks.")
-    final = codex(task_id="final", prompt="Prioritize:\n{{ nodes.scan.output }}")
+    final = gaia(task_id="final", prompt="Prioritize:\n{{ nodes.scan.output }}")
     scan >> final
 ```
 
@@ -167,19 +160,19 @@ Shared memory file across all agents:
 
 ```python
 with Graph("campaign", scratchboard=True) as g:
-    shards = fanout(codex(task_id="fuzz", prompt="..."), 128)
+    shards = fanout(gaia(task_id="fuzz", prompt="..."), 128)
 ```
 
 ## Tuned Agent Evolution
 
-Use a completed Codex run as training data to create a reusable tuned agent:
+Use a completed Gaia run as training data to create a reusable tuned agent:
 
 ```python
-from agentflow import Graph, codex, evolve
+from agentflow import Graph, evolve, gaia
 
-with Graph("improve-codex", working_dir=".") as g:
-    source = codex(task_id="plan", prompt="Inspect this repo and summarize the main risks.")
-    tuned = evolve(source, target="codex", optimizer="codex")
+with Graph("improve-gaia", working_dir=".") as g:
+    source = gaia(task_id="plan", prompt="Inspect this repo and summarize the main risks.")
+    tuned = evolve(source, target="gaia", optimizer="gaia")
 
 print(g.to_json())
 ```
@@ -188,9 +181,9 @@ Run order:
 
 ```bash
 agentflow run pipeline.py
-agentflow evolve <run_id> -n <node_id> --target codex --profile codex --optimizer codex
+agentflow evolve <run_id> -n <node_id> --target gaia --profile gaia --optimizer gaia
 agentflow tuned-agents
-agentflow tuned-agent codex_tuned --output json
+agentflow tuned-agent gaia_tuned --output json
 ```
 
 Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/<version>/` with copied traces, the cloned repo, and version metadata. Tuned agents currently resolve only on local targets.
@@ -205,10 +198,10 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `code_review.py` | Fan out code review across files, merge findings |
 | `dep_audit.py` | Audit each dependency for security/license issues |
 | `test_gap.py` | Find untested modules, suggest tests per module |
-| `multi_agent_debate.py` | Codex vs Claude: independent solve + cross-critique |
+| `multi_agent_debate.py` | Parallel Gaia proposals with cross-critique |
 | `release_check.py` | Parallel release gate: tests + security + changelog |
 | `iterative_impl.py` | Write → review → fix cycle until LGTM |
-| `pi_local_lmstudio.py` | Local LLMs for scanning, external agents for synthesis |
+| `pi_local_lmstudio.py` | Gaia-only local scanning and synthesis |
 | `graph_optimization_rounds.py` | Multiple optimization rounds over your graph |
 | `airflow_like_fuzz_batched.py` | 128-shard fanout with batch merge + periodic monitor |
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
@@ -221,17 +214,17 @@ Run multiple optimization rounds over your graph with top-level `optimizer` and 
 Artifacts and logs for each round live under `.agentflow/runs/<run_id>/optimization/round-XXX/`.
 
 ```python
-from agentflow import Graph, codex
+from agentflow import Graph, gaia
 
 with Graph(
     "optimization-demo",
-    optimizer="codex",
+    optimizer="gaia",
     n_run=2,
     concurrency=2,
 ) as g:
-    plan = codex(task_id="plan", prompt="Outline the tasks required to finish the ticket.")
-    review = codex(task_id="review", prompt="Review the plan for missing steps or risks.")
-    summary = codex(task_id="summary", prompt="Summarize the approved plan and next actions.")
+    plan = gaia(task_id="plan", prompt="Outline the tasks required to finish the ticket.")
+    review = gaia(task_id="review", prompt="Review the plan for missing steps or risks.")
+    summary = gaia(task_id="summary", prompt="Summarize the approved plan and next actions.")
     plan >> review >> summary
 
 print(g.to_json())
@@ -242,9 +235,9 @@ print(g.to_json())
 ```bash
 agentflow run pipeline.py           # run a pipeline
 agentflow run pipeline.py --output summary
-agentflow evolve <run_id> -n plan   # evolve a tuned agent from prior Codex traces
+agentflow evolve <run_id> -n plan   # evolve a tuned agent from prior Gaia traces
 agentflow tuned-agents              # list locally registered tuned agents
-agentflow tuned-agent codex_tuned   # inspect one tuned agent
+agentflow tuned-agent gaia_tuned    # inspect one tuned agent
 agentflow validate pipeline.py      # check without running
 agentflow examples                  # list reference examples
 cp examples/airflow_like.py pipeline.py   # copy one, then edit it
@@ -269,5 +262,4 @@ That opt-in is meant for trusted operator-controlled workflows only.
 
 * [gepa](https://github.com/gepa-ai/gepa)
 * [kiss-ai](https://github.com/ksenxx/kiss_ai)
-* [claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram)
 * [linux.do](https://linux.do)

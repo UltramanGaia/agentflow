@@ -55,7 +55,7 @@ describe("cloneGraph", () => {
     const original = makeGraph({
       pipeline: {
         name: "original",
-        nodes: [{ id: "node-1", agent: "codex", prompt: "test", depends_on: [] }],
+        nodes: [{ id: "node-1", agent: "gaia", prompt: "test", depends_on: [] }],
       },
     });
     const cloned = cloneGraph(original);
@@ -74,10 +74,10 @@ describe("ensureLayout", () => {
       },
       pipeline: {
         nodes: [
-          { id: "a", agent: "codex", prompt: "", depends_on: [] },
-          { id: "b", agent: "claude", prompt: "", depends_on: [] },
-          { id: "c", agent: "pi", prompt: "", depends_on: [] },
-          { id: "d", agent: "codex", prompt: "", depends_on: [] },
+          { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+          { id: "b", agent: "gaia", prompt: "", depends_on: [] },
+          { id: "c", agent: "gaia", prompt: "", depends_on: [] },
+          { id: "d", agent: "gaia", prompt: "", depends_on: [] },
         ],
       },
     } as const;
@@ -96,7 +96,7 @@ describe("ensureLayout", () => {
         layout: { a: { x: 100, y: 200 } } as Record<string, { x: number; y: number }>,
       },
       pipeline: {
-        nodes: [{ id: "a", agent: "codex", prompt: "", depends_on: [] }],
+        nodes: [{ id: "a", agent: "gaia", prompt: "", depends_on: [] }],
       },
     };
 
@@ -113,7 +113,7 @@ describe("toFlowNodes", () => {
         layout: { "node-1": { x: 100, y: 200 } },
       },
       pipeline: {
-        nodes: [{ id: "node-1", agent: "codex", prompt: "test prompt", depends_on: [] }],
+        nodes: [{ id: "node-1", agent: "gaia", prompt: "test prompt", depends_on: [] }],
       },
     };
 
@@ -124,14 +124,14 @@ describe("toFlowNodes", () => {
     expect(nodes[0].type).toBe("agentNode");
     expect(nodes[0].position).toEqual({ x: 100, y: 200 });
     expect(nodes[0].data.title).toBe("node-1");
-    expect(nodes[0].data.agent).toBe("codex");
+    expect(nodes[0].data.agent).toBe("gaia");
     expect(nodes[0].selected).toBe(true);
   });
 
   it("passes status to node data when provided", () => {
     const draft = {
       meta: { layout: { "node-1": { x: 0, y: 0 } } },
-      pipeline: { nodes: [{ id: "node-1", agent: "codex", prompt: "", depends_on: [] }] },
+      pipeline: { nodes: [{ id: "node-1", agent: "gaia", prompt: "", depends_on: [] }] },
     };
     const statusByNode = { "node-1": "running" };
 
@@ -145,9 +145,9 @@ describe("toFlowEdges", () => {
   it("creates edges from depends_on relationships", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "a", agent: "codex", prompt: "", depends_on: [] },
-        { id: "b", agent: "codex", prompt: "", depends_on: ["a"] },
-        { id: "c", agent: "codex", prompt: "", depends_on: ["a", "b"] },
+        { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "b", agent: "gaia", prompt: "", depends_on: ["a"] },
+        { id: "c", agent: "gaia", prompt: "", depends_on: ["a", "b"] },
       ],
     });
 
@@ -162,8 +162,8 @@ describe("toFlowEdges", () => {
   it("creates edges with correct source and target", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "plan", agent: "codex", prompt: "", depends_on: [] },
-        { id: "impl", agent: "codex", prompt: "", depends_on: ["plan"] },
+        { id: "plan", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "impl", agent: "gaia", prompt: "", depends_on: ["plan"] },
       ],
     });
 
@@ -179,8 +179,8 @@ describe("applyConnection", () => {
   it("adds dependency when connecting nodes", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "a", agent: "codex", prompt: "", depends_on: [] },
-        { id: "b", agent: "codex", prompt: "", depends_on: [] },
+        { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "b", agent: "gaia", prompt: "", depends_on: [] },
       ],
     });
 
@@ -192,8 +192,8 @@ describe("applyConnection", () => {
   it("does not duplicate dependencies", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "a", agent: "codex", prompt: "", depends_on: [] },
-        { id: "b", agent: "codex", prompt: "", depends_on: ["a"] },
+        { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "b", agent: "gaia", prompt: "", depends_on: ["a"] },
       ],
     });
 
@@ -204,7 +204,7 @@ describe("applyConnection", () => {
 
   it("ignores invalid connections", () => {
     const pipeline = makePipeline({
-      nodes: [{ id: "a", agent: "codex", prompt: "", depends_on: [] }],
+      nodes: [{ id: "a", agent: "gaia", prompt: "", depends_on: [] }],
     });
 
     // Missing source
@@ -229,8 +229,8 @@ describe("removeConnection", () => {
   it("removes dependency from the target node", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "a", agent: "codex", prompt: "", depends_on: [] },
-        { id: "b", agent: "codex", prompt: "", depends_on: ["a"] },
+        { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "b", agent: "gaia", prompt: "", depends_on: ["a"] },
       ],
     });
     const edge: Edge = { id: "a->b", source: "a", target: "b" };
@@ -242,7 +242,7 @@ describe("removeConnection", () => {
 
   it("does nothing if target node does not exist", () => {
     const pipeline = makePipeline({
-      nodes: [{ id: "a", agent: "codex", prompt: "", depends_on: [] }],
+      nodes: [{ id: "a", agent: "gaia", prompt: "", depends_on: [] }],
     });
     const edge: Edge = { id: "a->nonexistent", source: "a", target: "nonexistent" };
 
@@ -256,9 +256,9 @@ describe("renameNode", () => {
   it("renames a node and updates all references", () => {
     const pipeline = makePipeline({
       nodes: [
-        { id: "a", agent: "codex", prompt: "", depends_on: [] },
-        { id: "b", agent: "codex", prompt: "", depends_on: ["a"] },
-        { id: "c", agent: "codex", prompt: "", depends_on: ["a", "b"] },
+        { id: "a", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "b", agent: "gaia", prompt: "", depends_on: ["a"] },
+        { id: "c", agent: "gaia", prompt: "", depends_on: ["a", "b"] },
       ],
     });
     const layout = { a: { x: 100, y: 100 } };
@@ -274,7 +274,7 @@ describe("renameNode", () => {
 
   it("does nothing when old and new IDs are the same", () => {
     const pipeline = makePipeline({
-      nodes: [{ id: "a", agent: "codex", prompt: "", depends_on: [] }],
+      nodes: [{ id: "a", agent: "gaia", prompt: "", depends_on: [] }],
     });
     const originalPipeline = JSON.parse(JSON.stringify(pipeline));
     const layout = {};
@@ -289,7 +289,7 @@ describe("normalizeNode", () => {
   it("normalizes a raw node object", () => {
     const raw = {
       id: "test-node",
-      agent: "pi",
+      agent: "gaia",
       prompt: "Hello",
       depends_on: ["a", "b"],
     };
@@ -297,7 +297,7 @@ describe("normalizeNode", () => {
     const result = normalizeNode(raw);
     
     expect(result.id).toBe("test-node");
-    expect(result.agent).toBe("pi");
+    expect(result.agent).toBe("gaia");
     expect(result.prompt).toBe("Hello");
     expect(result.depends_on).toEqual(["a", "b"]);
   });
@@ -308,7 +308,7 @@ describe("normalizeNode", () => {
     const result = normalizeNode(raw);
     
     expect(result.id).toBe("");
-    expect(result.agent).toBe("codex");
+    expect(result.agent).toBe("gaia");
     expect(result.prompt).toBe("");
     expect(result.depends_on).toEqual([]);
   });
@@ -316,7 +316,7 @@ describe("normalizeNode", () => {
   it("preserves extra fields", () => {
     const raw = {
       id: "node-1",
-      agent: "codex",
+      agent: "gaia",
       prompt: "",
       depends_on: [],
       extra_field: "preserved",
@@ -332,7 +332,7 @@ describe("normalizeNode", () => {
   it("converts non-string depends_on values", () => {
     const raw = {
       id: "test",
-      agent: "codex",
+      agent: "gaia",
       depends_on: [1, 2, 3] as unknown as string[],
     };
 

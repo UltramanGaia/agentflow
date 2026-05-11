@@ -107,8 +107,8 @@ const runDetailPayload = {
       name: "Deploy pipeline",
       description: "release",
       nodes: [
-        { id: "plan", agent: "codex", prompt: "", depends_on: [] },
-        { id: "apply", agent: "claude", prompt: "", depends_on: ["plan"] },
+        { id: "plan", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "apply", agent: "gaia", prompt: "", depends_on: ["plan"] },
       ],
     },
     nodes: {},
@@ -117,7 +117,7 @@ const runDetailPayload = {
     nodes: [
       {
         id: "plan",
-        agent: "codex",
+        agent: "gaia",
         prompt: "",
         depends_on: [],
         status: "completed",
@@ -127,7 +127,7 @@ const runDetailPayload = {
       },
       {
         id: "apply",
-        agent: "claude",
+        agent: "gaia",
         prompt: "",
         depends_on: ["plan"],
         status: "failed",
@@ -176,8 +176,8 @@ const graphPayload = {
     scratchboard: false,
     use_worktree: false,
     nodes: [
-      { id: "plan", agent: "codex", prompt: "Plan it", depends_on: [] },
-      { id: "apply", agent: "claude", prompt: "Apply it", depends_on: ["plan"] },
+      { id: "plan", agent: "gaia", prompt: "Plan it", depends_on: [] },
+      { id: "apply", agent: "gaia", prompt: "Apply it", depends_on: ["plan"] },
     ],
   },
 };
@@ -344,7 +344,7 @@ describe("GraphEditorPage", () => {
     });
     expect(screen.getAllByDisplayValue("Release graph").length).toBeGreaterThan(0);
     expect(screen.getAllByDisplayValue("plan").length).toBeGreaterThan(0);
-    expect(screen.getAllByDisplayValue("codex").length).toBeGreaterThan(0);
+    expect(screen.getAllByDisplayValue("gaia").length).toBeGreaterThan(0);
     expect(screen.getAllByDisplayValue("Plan it").length).toBeGreaterThan(0);
   });
 
@@ -380,7 +380,7 @@ describe("GraphEditorPage", () => {
           {
             ...graphPayload.pipeline,
             name: "Updated graph",
-            nodes: [{ id: "only", agent: "codex", prompt: "One", depends_on: [] }],
+            nodes: [{ id: "only", agent: "gaia", prompt: "One", depends_on: [] }],
           },
           null,
           2,

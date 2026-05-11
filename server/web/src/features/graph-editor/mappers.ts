@@ -115,7 +115,7 @@ export function normalizeNode(raw: unknown): PipelineNode {
   return {
     ...node,
     id: String(node.id ?? ""),
-    agent: String(node.agent ?? "codex"),
+    agent: String(node.agent ?? "gaia"),
     prompt: String(node.prompt ?? ""),
     depends_on: Array.isArray(node.depends_on) ? node.depends_on.map(String) : [],
   };

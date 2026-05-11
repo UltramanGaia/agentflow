@@ -192,7 +192,7 @@ export const useGraphEditorStore = create<GraphEditorStore>((set, get) => ({
       draft.pipeline.nodes.push(
         normalizeNode({
           id: nextId,
-          agent: template?.agent ?? "codex",
+          agent: template?.agent ?? "gaia",
           prompt: template?.prompt ?? "",
           depends_on: template?.depends_on ?? [],
           ...template,
@@ -213,7 +213,7 @@ export const useGraphEditorStore = create<GraphEditorStore>((set, get) => ({
       const nextId = `node_${draft.pipeline.nodes.length + 1}`;
       draft.pipeline.nodes.push({
         id: nextId,
-        agent: "codex",
+        agent: "gaia",
         prompt: "",
         depends_on: [],
       });

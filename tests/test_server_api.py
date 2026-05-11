@@ -14,8 +14,8 @@ def _sample_pipeline(name: str = "demo-pipeline") -> dict:
         "name": name,
         "working_dir": ".",
         "nodes": [
-            {"id": "plan", "agent": "codex", "prompt": "Plan the work.", "depends_on": []},
-            {"id": "apply", "agent": "codex", "prompt": "Apply the plan.", "depends_on": ["plan"]},
+            {"id": "plan", "agent": "gaia", "prompt": "Plan the work.", "depends_on": []},
+            {"id": "apply", "agent": "gaia", "prompt": "Apply the plan.", "depends_on": ["plan"]},
         ],
     }
 
@@ -111,10 +111,10 @@ def test_run_detail_exposes_runtime_instance_metadata(tmp_path: Path) -> None:
             "working_dir": ".",
             "fanouts": {"review": ["review-001", "review-002"]},
             "nodes": [
-                {"id": "plan", "agent": "codex", "prompt": "Plan the work.", "depends_on": []},
+                {"id": "plan", "agent": "gaia", "prompt": "Plan the work.", "depends_on": []},
                 {
                     "id": "review-001",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "Review shard 1.",
                     "depends_on": ["plan"],
                     "fanout_group": "review",
@@ -122,7 +122,7 @@ def test_run_detail_exposes_runtime_instance_metadata(tmp_path: Path) -> None:
                 },
                 {
                     "id": "review-002",
-                    "agent": "codex",
+                    "agent": "gaia",
                     "prompt": "Review shard 2.",
                     "depends_on": ["plan"],
                     "fanout_group": "review",

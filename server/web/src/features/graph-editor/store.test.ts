@@ -16,8 +16,8 @@ function makeGraph(overrides?: Partial<GraphView>): GraphView {
       name: "test-graph",
       description: "test desc",
       nodes: [
-        { id: "plan", agent: "codex", prompt: "Plan the work.", depends_on: [] },
-        { id: "impl", agent: "claude", prompt: "Implement.", depends_on: ["plan"] },
+        { id: "plan", agent: "gaia", prompt: "Plan the work.", depends_on: [] },
+        { id: "impl", agent: "gaia", prompt: "Implement.", depends_on: ["plan"] },
       ],
     },
     ...overrides,
@@ -96,14 +96,14 @@ describe("updateSelectedNode", () => {
     useGraphEditorStore.getState().setSelectedNodeId("plan");
     useGraphEditorStore.getState().updateSelectedNode({
       id: "plan",
-      agent: "pi",
+      agent: "gaia",
       prompt: "New prompt",
       depends_on: [],
     });
 
     const state = useGraphEditorStore.getState();
     const node = state.draft.pipeline.nodes.find((n) => n.id === "plan");
-    expect(node?.agent).toBe("pi");
+    expect(node?.agent).toBe("gaia");
     expect(node?.prompt).toBe("New prompt");
     expect(state.dirty).toBe(true);
   });
@@ -112,7 +112,7 @@ describe("updateSelectedNode", () => {
     useGraphEditorStore.getState().setSelectedNodeId("plan");
     useGraphEditorStore.getState().updateSelectedNode({
       id: "planning",
-      agent: "codex",
+      agent: "gaia",
       prompt: "Plan the work.",
       depends_on: [],
     });
@@ -129,7 +129,7 @@ describe("updateSelectedNode", () => {
     
     useGraphEditorStore.getState().updateSelectedNode({
       id: "plan",
-      agent: "codex",
+      agent: "gaia",
       prompt: "",
       depends_on: [],
     });
@@ -184,7 +184,7 @@ describe("applyPipelineJson", () => {
   it("replaces the pipeline from JSON text", () => {
     const newPipeline: PipelineSpec = {
       name: "from-json",
-      nodes: [{ id: "step1", agent: "pi", prompt: "Go", depends_on: [] }],
+      nodes: [{ id: "step1", agent: "gaia", prompt: "Go", depends_on: [] }],
     };
 
     useGraphEditorStore.getState().applyPipelineJson(JSON.stringify(newPipeline));
@@ -198,7 +198,7 @@ describe("applyPipelineJson", () => {
   it("keeps selection on matching node ID", () => {
     const newPipeline: PipelineSpec = {
       name: "from-json",
-      nodes: [{ id: "plan", agent: "pi", prompt: "Go", depends_on: [] }],
+      nodes: [{ id: "plan", agent: "gaia", prompt: "Go", depends_on: [] }],
     };
 
     useGraphEditorStore.getState().setSelectedNodeId("plan");

@@ -29,8 +29,6 @@ _TUNER_CONFIG_DIR = "agent_tuner"
 _TUNED_AGENTS_ROOT = Path(".agentflow") / "tuned_agents"
 _REGISTRY_PATH = _TUNED_AGENTS_ROOT / "registry.json"
 _INTERACTIVE_AGENTS = {
-    AgentKind.CODEX,
-    AgentKind.CLAUDE,
     AgentKind.GAIA,
 }
 
@@ -205,7 +203,7 @@ def _profile_alias(profile: str, config: TunerConfig) -> str:
     if builtin_agent_kind(alias) is not None:
         raise ValueError(
             f"tuner profile `{profile}` resolves to built-in agent name `{alias}`; "
-            "set `name` to a non-built-in alias such as `codex_tuned`"
+            "set `name` to a non-built-in alias such as `gaia_tuned`"
         )
     return alias
 
@@ -616,9 +614,9 @@ def run_evolution_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     target_kind = builtin_agent_kind(request.target)
     optimizer_kind = builtin_agent_kind(request.optimizer)
     if target_kind is None or target_kind not in _INTERACTIVE_AGENTS:
-        raise ValueError("evolution target must be one of: codex, claude, gaia")
+        raise ValueError("evolution target must be: gaia")
     if optimizer_kind is None or optimizer_kind not in _INTERACTIVE_AGENTS:
-        raise ValueError("optimizer must be one of: codex, claude, gaia")
+        raise ValueError("optimizer must be: gaia")
     if resolved_config.config.base_agent != target_kind:
         raise ValueError(
             f"tuner profile `{request.profile}` targets `{resolved_config.config.base_agent.value}`, "

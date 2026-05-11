@@ -22,7 +22,7 @@ for path in Path(".agentflow/runs").glob("*"):
         continue
     data = json.loads(run_json.read_text())
     pipeline = data.get("pipeline", {})
-    if data.get("optimization_parent_run_id") is None and pipeline.get("optimizer") == "codex" and pipeline.get("n_run") == 2:
+    if data.get("optimization_parent_run_id") is None and pipeline.get("optimizer") == "gaia" and pipeline.get("n_run") == 2:
         candidates.append((path.stat().st_mtime, path))
 
 print(candidates and str(sorted(candidates)[-1][1]) or "")

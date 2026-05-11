@@ -114,7 +114,7 @@ describe("RunsPage", () => {
           nodes: [
             {
               id: "apply",
-              agent: "codex",
+              agent: "gaia",
               prompt: "",
               depends_on: [],
               status: "failed",
@@ -137,7 +137,8 @@ describe("RunsPage", () => {
     render(<RunsPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText("Runtime map")).toBeInTheDocument();
+      expect(screen.getByText("Stage view")).toBeInTheDocument();
+      expect(screen.getByText("gaia")).toBeInTheDocument();
       expect(screen.getAllByText("failing-pipeline").length).toBeGreaterThan(0);
     });
   });

@@ -14,9 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class AgentKind(StrEnum):
-    CODEX = "codex"
-    CLAUDE = "claude"
-    PI = "pi"
     GAIA = "gaia"
     PYTHON = "python"
     SHELL = "shell"
@@ -65,9 +62,6 @@ class RunStatus(StrEnum):
 
 
 _INTERACTIVE_AGENT_KINDS = {
-    AgentKind.CODEX,
-    AgentKind.CLAUDE,
-    AgentKind.PI,
     AgentKind.GAIA,
 }
 

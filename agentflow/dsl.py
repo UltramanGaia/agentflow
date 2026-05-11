@@ -352,27 +352,6 @@ def merge(
 # ---------------------------------------------------------------------------
 
 
-def codex(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
-    return _node(AgentKind.CODEX, task_id=task_id, prompt=prompt, **kwargs)
-
-
-def claude(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
-    return _node(AgentKind.CLAUDE, task_id=task_id, prompt=prompt, **kwargs)
-
-
-def pi(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
-    """Run the Pi coding agent (https://pi.dev).
-
-    Supports external providers (anthropic, openai, openai-codex, groq, etc.) and
-    local endpoints registered in the user's ``~/.pi/agent/models.json`` (e.g.
-    LMStudio, Ollama). The ``model`` kwarg accepts Pi's ``provider/id[:thinking]``
-    syntax (e.g. ``"lmstudio/mythos-26b"`` or ``"anthropic/claude-sonnet-4-6:high"``).
-
-    AgentFlow assumes Pi has already been configured by its own config files.
-    """
-    return _node(AgentKind.PI, task_id=task_id, prompt=prompt, **kwargs)
-
-
 def gaia(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     """Run the Gaia coding agent."""
     return _node(AgentKind.GAIA, task_id=task_id, prompt=prompt, **kwargs)
@@ -398,8 +377,8 @@ def agent(name: str, *, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder
 def evolve(
     nodes: NodeBuilder | list[NodeBuilder],
     *,
-    target: str = "codex",
-    optimizer: str = "codex",
+    target: str = "gaia",
+    optimizer: str = "gaia",
     tuned_agent: str | None = None,
     task_id: str | None = None,
     **kwargs: Any,

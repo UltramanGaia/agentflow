@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from agentflow.agents.base import AgentAdapter
-from agentflow.agents.claude import ClaudeAdapter
-from agentflow.agents.codex import CodexAdapter
 from agentflow.agents.gaia import GaiaAdapter
-from agentflow.agents.pi import PiAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter
 from agentflow.specs import AgentKind
 
@@ -12,9 +9,6 @@ from agentflow.specs import AgentKind
 class AdapterRegistry:
     def __init__(self) -> None:
         self._registry: dict[AgentKind, AgentAdapter] = {
-            AgentKind.CODEX: CodexAdapter(),
-            AgentKind.CLAUDE: ClaudeAdapter(),
-            AgentKind.PI: PiAdapter(),
             AgentKind.GAIA: GaiaAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),

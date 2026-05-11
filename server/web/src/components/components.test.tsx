@@ -96,7 +96,7 @@ describe("AgentNode", () => {
 
     render(
       <AgentNode
-        data={{ title: "apply", agent: "claude", status: "failed", onInspect }}
+        data={{ title: "apply", agent: "gaia", status: "failed", onInspect }}
         dragging={false}
         id="apply"
         isConnectable

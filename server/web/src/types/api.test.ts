@@ -13,7 +13,7 @@ describe("pipelineNodeSchema", () => {
   it("parses a valid node", () => {
     const node = {
       id: "plan",
-      agent: "codex",
+      agent: "gaia",
       prompt: "Plan the work",
       depends_on: [],
     };
@@ -21,13 +21,13 @@ describe("pipelineNodeSchema", () => {
     const result = pipelineNodeSchema.parse(node);
     
     expect(result.id).toBe("plan");
-    expect(result.agent).toBe("codex");
+    expect(result.agent).toBe("gaia");
     expect(result.prompt).toBe("Plan the work");
     expect(result.depends_on).toEqual([]);
   });
 
   it("provides default values", () => {
-    const node = { id: "a", agent: "pi" };
+    const node = { id: "a", agent: "gaia" };
 
     const result = pipelineNodeSchema.parse(node);
     
@@ -38,7 +38,7 @@ describe("pipelineNodeSchema", () => {
   it("preserves extra fields via catchall", () => {
     const node = {
       id: "a",
-      agent: "codex",
+      agent: "gaia",
       tools: "read_only",
       success_criteria: [{ kind: "output_contains", value: "LGTM" }],
     };
@@ -57,8 +57,8 @@ describe("pipelineSpecSchema", () => {
     const pipeline = {
       name: "test-pipeline",
       nodes: [
-        { id: "plan", agent: "codex", prompt: "", depends_on: [] },
-        { id: "impl", agent: "claude", prompt: "", depends_on: ["plan"] },
+        { id: "plan", agent: "gaia", prompt: "", depends_on: [] },
+        { id: "impl", agent: "gaia", prompt: "", depends_on: ["plan"] },
       ],
     };
 
@@ -123,7 +123,7 @@ describe("graphViewSchema", () => {
       },
       pipeline: {
         name: "My Graph",
-        nodes: [{ id: "plan", agent: "codex", prompt: "", depends_on: [] }],
+        nodes: [{ id: "plan", agent: "gaia", prompt: "", depends_on: [] }],
       },
     };
 
@@ -176,7 +176,7 @@ describe("runNodeSchema", () => {
   it("parses a run node", () => {
     const node = {
       id: "plan",
-      agent: "codex",
+      agent: "gaia",
       prompt: "Plan",
       depends_on: [],
       status: "completed",
@@ -205,7 +205,7 @@ describe("runDetailSchema", () => {
         status: "completed",
         pipeline: {
           name: "test",
-          nodes: [{ id: "plan", agent: "codex", prompt: "", depends_on: [] }],
+          nodes: [{ id: "plan", agent: "gaia", prompt: "", depends_on: [] }],
         },
         nodes: {
           plan: {
@@ -219,7 +219,7 @@ describe("runDetailSchema", () => {
         nodes: [
           {
             id: "plan",
-            agent: "codex",
+            agent: "gaia",
             prompt: "",
             depends_on: [],
             status: "completed",
