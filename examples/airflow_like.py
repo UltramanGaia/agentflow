@@ -1,26 +1,26 @@
-"""Smallest Python-authored Pi DAG reference."""
+"""Smallest Python-authored Gaia DAG reference."""
 
-from agentflow import Graph, pi
+from agentflow import Graph, gaia
 
 
 with Graph("airflow-like-example", working_dir=".", concurrency=3) as dag:
-    plan = pi(
+    plan = gaia(
         task_id="plan",
         prompt="Inspect the repo and produce a concise plan.",
         tools="read_only",
     )
-    implement = pi(
+    implement = gaia(
         task_id="implement",
         prompt="Implement the approved plan:\n\n{{ nodes.plan.output }}",
         tools="read_write",
     )
-    review = pi(
+    review = gaia(
         task_id="review",
         prompt="Review the plan and call out risks:\n\n{{ nodes.plan.output }}",
         capture="trace",
         tools="read_only",
     )
-    merge = pi(
+    merge = gaia(
         task_id="merge",
         prompt=(
             "Merge the implementation and review into one final response.\n\n"

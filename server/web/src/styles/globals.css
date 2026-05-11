@@ -23,6 +23,16 @@ a {
   text-decoration: none;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 button,
 input,
 select,
@@ -172,7 +182,8 @@ p {
   transition:
     transform 140ms ease,
     border-color 140ms ease,
-    background 140ms ease;
+    background 140ms ease,
+    opacity 180ms ease;
 }
 
 .nav-link,
@@ -327,6 +338,7 @@ p {
   box-shadow: var(--shadow-soft);
   border-radius: var(--radius-panel);
   padding: 18px;
+  transition: box-shadow 200ms ease;
 }
 
 .panel-quiet {
@@ -349,6 +361,12 @@ p {
     linear-gradient(180deg, rgba(255, 255, 255, 0.4), transparent),
     var(--surface-raised);
   border: 1px solid var(--border-subtle);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.metric-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-soft);
 }
 
 .metric-card strong {
@@ -420,6 +438,10 @@ p {
   border-radius: 18px;
   border: 1px solid var(--border-subtle);
   background: var(--surface-raised);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 140ms ease;
 }
 
 .list-item.active,
@@ -433,6 +455,12 @@ p {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.run-card:hover,
+.list-item:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
 .list-title,
@@ -502,6 +530,7 @@ p {
     repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(110, 84, 49, 0.08) 31px, rgba(110, 84, 49, 0.08) 32px),
     repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(110, 84, 49, 0.08) 31px, rgba(110, 84, 49, 0.08) 32px),
     var(--surface-graph);
+  transition: box-shadow 200ms ease;
 }
 
 .flow-panel-editor {
@@ -596,6 +625,20 @@ p {
   min-height: 180px;
 }
 
+@keyframes state-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.state-panel,
+.empty-state {
+  animation: state-enter 180ms ease-out;
+}
+
 .inline-notice,
 .toast {
   display: flex;
@@ -636,6 +679,21 @@ p {
   flex-direction: column;
   gap: 10px;
   width: min(380px, calc(100vw - 32px));
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.toast {
+  animation: toast-enter 220ms ease-out;
 }
 
 .diagnostic-shell,
