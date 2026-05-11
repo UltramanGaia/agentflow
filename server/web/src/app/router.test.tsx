@@ -44,9 +44,7 @@ describe("AppRouter", () => {
     render(<AppRouter />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      // Check for the h2 headings in the page content
       expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
-      expect(screen.getByRole("heading", { name: "Graphs" })).toBeInTheDocument();
     });
   });
 

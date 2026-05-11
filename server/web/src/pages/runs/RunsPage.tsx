@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useToasts } from "../../app/providers";
 import { FilterBar } from "../../components/controls/FilterBar";
 import { SearchInput } from "../../components/controls/SearchInput";
@@ -35,7 +35,6 @@ function getActivityTime(run: RunSummary) {
 
 export function RunsPage() {
   const navigate = useNavigate();
-  const location = useLocation();
   const queryClient = useQueryClient();
   const { pushToast } = useToasts();
   const [search, setSearch] = useState("");
@@ -113,7 +112,6 @@ export function RunsPage() {
   const latestCompleted = [...runs]
     .filter((run) => run.status === "completed")
     .sort((left, right) => new Date(getActivityTime(right)).getTime() - new Date(getActivityTime(left)).getTime())[0];
-  const focusGraphs = location.pathname === "/graphs";
 
   if (runsQuery.isLoading || graphsQuery.isLoading) {
     return <LoadingState>Loading runs and graphs...</LoadingState>;
@@ -128,13 +126,9 @@ export function RunsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow={focusGraphs ? "Authoring" : "Operations"}
-        title={focusGraphs ? "Graphs" : "Runs"}
-        description={
-          focusGraphs
-            ? "Jump into a saved graph, create a new draft, or inspect recent pipeline changes."
-            : "Triage failures, watch active runs, and move from landing page to diagnostics without digging through raw runtime state."
-        }
+        eyebrow="Operations"
+        title="Runs"
+        description="Triage failures, watch active runs, and move from landing page to diagnostics without digging through raw runtime state."
         actions={
           <>
             <button
@@ -165,120 +159,88 @@ export function RunsPage() {
         />
       </div>
 
-      {!focusGraphs ? (
-        <FilterBar>
-          <SearchInput
-            placeholder="Find by run id, pipeline, or failed node"
-            value={search}
-            onChange={setSearch}
+      <FilterBar>
+        <SearchInput
+          placeholder="Find by run id, pipeline, or failed node"
+          value={search}
+          onChange={setSearch}
+        />
+        <div className="field">
+          <span className="field-label">Scope</span>
+          <SegmentedControl
+            options={[
+              { label: "All", value: "all" },
+              { label: "Running", value: "running" },
+              { label: "Failed", value: "failed" },
+              { label: "Needs Attention", value: "attention" },
+            ]}
+            value={statusFilter}
+            onChange={setStatusFilter}
           />
-          <div className="field">
-            <span className="field-label">Scope</span>
-            <SegmentedControl
-              options={[
-                { label: "All", value: "all" },
-                { label: "Running", value: "running" },
-                { label: "Failed", value: "failed" },
-                { label: "Needs Attention", value: "attention" },
-              ]}
-              value={statusFilter}
-              onChange={setStatusFilter}
-            />
-          </div>
-          <label className="field">
-            <span className="field-label">Sort</span>
-            <select value={sort} onChange={(event) => setSort(event.target.value as RunSort)}>
-              <option value="recent">Most recent activity</option>
-              <option value="status">Status</option>
-              <option value="name">Pipeline name</option>
-            </select>
-          </label>
-          <label className="checkbox-item">
-            <input checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} type="checkbox" />
-            Auto-refresh
-          </label>
-        </FilterBar>
-      ) : null}
+        </div>
+        <label className="field">
+          <span className="field-label">Sort</span>
+          <select value={sort} onChange={(event) => setSort(event.target.value as RunSort)}>
+            <option value="recent">Most recent activity</option>
+            <option value="status">Status</option>
+            <option value="name">Pipeline name</option>
+          </select>
+        </label>
+        <label className="checkbox-item">
+          <input checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} type="checkbox" />
+          Auto-refresh
+        </label>
+      </FilterBar>
 
       <div className="layout">
         <div className="detail-stack">
-          {!focusGraphs ? (
-            <>
-              <PageSection
-                title="Recent failures"
-                description="Failure-first view for runs that already need intervention."
-              >
-                {failedRuns.length ? (
-                  <div className="list">
-                    {failedRuns.map((run) => (
-                      <RunCard key={run.id} run={run} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState title="No failed runs" description="Recent executions are clean." />
-                )}
-              </PageSection>
+          <PageSection
+            title="Recent failures"
+            description="Failure-first view for runs that already need intervention."
+          >
+            {failedRuns.length ? (
+              <div className="list">
+                {failedRuns.map((run) => (
+                  <RunCard key={run.id} run={run} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No failed runs" description="Recent executions are clean." />
+            )}
+          </PageSection>
 
-              <PageSection
-                title="Active runs"
-                description="Keep an eye on inflight work without scanning the full history."
-              >
-                {activeRuns.length ? (
-                  <div className="list">
-                    {activeRuns.map((run) => (
-                      <RunCard key={run.id} run={run} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState title="No active runs" description="Nothing is executing right now." />
-                )}
-              </PageSection>
+          <PageSection
+            title="Active runs"
+            description="Keep an eye on inflight work without scanning the full history."
+          >
+            {activeRuns.length ? (
+              <div className="list">
+                {activeRuns.map((run) => (
+                  <RunCard key={run.id} run={run} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No active runs" description="Nothing is executing right now." />
+            )}
+          </PageSection>
 
-              <PageSection
-                title="All runs"
-                description="Filtered execution history with quick links into runtime detail."
-              >
-                {filteredRuns.length ? (
-                  <div className="list">
-                    {filteredRuns.map((run) => (
-                      <RunCard key={run.id} run={run} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState
-                    title="No runs yet"
-                    description="Create or start a graph to populate runtime history."
-                  />
-                )}
-              </PageSection>
-            </>
-          ) : (
-            <PageSection
-              title="Saved graphs"
-              description="Your latest pipeline definitions, sorted by update time."
-            >
-              {graphs.length ? (
-                <div className="list">
-                  {graphs.map((graph) => (
-                    <div className="list-item" key={graph.id}>
-                      <div className="list-row-head">
-                        <Link className="list-title" to={`/graphs/${graph.id}/edit`}>
-                          {graph.name}
-                        </Link>
-                        <span className="status-badge status-completed">ready</span>
-                      </div>
-                      <div className="run-card-meta">
-                        <span>{graph.node_count} nodes</span>
-                        <span>Updated {formatDate(graph.updated_at)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState title="No graphs saved" description="Create a graph to start editing and running pipelines." />
-              )}
-            </PageSection>
-          )}
+          <PageSection
+            title="All runs"
+            description="Filtered execution history with quick links into runtime detail."
+          >
+            {filteredRuns.length ? (
+              <div className="list">
+                {filteredRuns.map((run) => (
+                  <RunCard key={run.id} run={run} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No runs yet"
+                description="Create or start a graph to populate runtime history."
+              />
+            )}
+          </PageSection>
         </div>
 
         <div className="sidebar-list">

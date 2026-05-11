@@ -192,11 +192,8 @@ class LocalRunner:
                 if wait_task in done:
                     break
                 if stdout_task in done and stderr_task in done:
-                    if not wait_task.done():
-                        try:
-                            await asyncio.wait_for(wait_task, timeout=5)
-                        except asyncio.TimeoutError:
-                            execution_error = RuntimeError("process did not exit after stdout/stderr closed")
+                    if not wait_task.done() and not await self._wait_for_exit(wait_task, 5):
+                        execution_error = RuntimeError("process did not exit after stdout/stderr closed")
                     break
         except Exception as exc:
             execution_error = exc
@@ -242,7 +239,10 @@ class LocalRunner:
         elif cancelled:
             exit_code = 130
         elif execution_error is not None:
-            exit_code = process.returncode if process.returncode is not None else 1
+            if process.returncode in (None, 0):
+                exit_code = 1
+            else:
+                exit_code = process.returncode
         else:
             exit_code = process.returncode if process.returncode is not None else 0
         return RawExecutionResult(

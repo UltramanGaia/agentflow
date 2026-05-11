@@ -105,6 +105,7 @@ class NodeExecutor:
             result.tick_count = max(result.tick_count, periodic_tick_number)
             runtime_state.last_tick_started_at = periodic_tick_started_at
         result.status = NodeStatus.RUNNING
+        await self.store.persist_run(run_id)
         await self.publish(run_id, "node_started", node_id=node_id)
         if periodic_tick_number is not None:
             await self.publish(
@@ -229,6 +230,7 @@ class NodeExecutor:
                 attempt.status = NodeStatus.CANCELLED
                 result.status = NodeStatus.CANCELLED
                 result.finished_at = attempt.finished_at
+                await self.store.persist_run(run_id)
                 await self.publish(
                     run_id,
                     "node_cancelled",
@@ -242,6 +244,7 @@ class NodeExecutor:
                 attempt.status = NodeStatus.COMPLETED
                 result.status = NodeStatus.READY if periodic_tick_number is not None else NodeStatus.COMPLETED
                 result.finished_at = attempt.finished_at
+                await self.store.persist_run(run_id)
                 if periodic_tick_number is not None:
                     if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
                         periodic_actions, periodic_action_parse_error = parse_periodic_actions(result.final_response)
@@ -277,6 +280,7 @@ class NodeExecutor:
             attempt.status = NodeStatus.FAILED
             result.status = NodeStatus.FAILED
             result.finished_at = attempt.finished_at
+            await self.store.persist_run(run_id)
             await self.publish(
                 run_id,
                 "node_failed",

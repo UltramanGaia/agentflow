@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { GraphsPage } from "./graphs/GraphsPage";
 import { RunsPage } from "./runs/RunsPage";
 
 function createWrapper() {
@@ -153,6 +154,63 @@ describe("RunsPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Server error")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("GraphsPage", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockFetch(responses: Record<string, unknown>) {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      for (const [path, data] of Object.entries(responses)) {
+        if (url === path) {
+          return {
+            ok: true,
+            json: () => Promise.resolve(data),
+          } as Response;
+        }
+      }
+      return {
+        ok: true,
+        json: () => Promise.resolve([]),
+      } as Response;
+    });
+  }
+
+  it("renders saved graphs and latest failing run", async () => {
+    mockFetch({
+      "/api/runs": mockRuns,
+      "/api/graphs": mockGraphs,
+    });
+
+    render(<GraphsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Graphs" })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText("My Graph").length).toBeGreaterThan(0);
+    expect(screen.getByText("Latest failing run")).toBeInTheDocument();
+    expect(screen.getAllByText("failing-pipeline").length).toBeGreaterThan(0);
+  });
+
+  it("shows empty graph state", async () => {
+    mockFetch({
+      "/api/runs": [],
+      "/api/graphs": [],
+    });
+
+    render(<GraphsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("No graphs saved")).toBeInTheDocument();
     });
   });
 });
