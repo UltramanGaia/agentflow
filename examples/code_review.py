@@ -1,10 +1,10 @@
-"""Independent multi-file code review with fanout and final synthesis."""
+"""Independent multi-file Gaia review with fanout and final synthesis."""
 
-from agentflow import Graph, claude, codex, fanout
+from agentflow import Graph, fanout, gaia
 
 
 with Graph("code-review-example", working_dir=".", concurrency=6) as dag:
-    scan = codex(
+    scan = gaia(
         task_id="scan",
         prompt=(
             "Scan the repository and list the top 5 most important files to review.\n"
@@ -14,7 +14,7 @@ with Graph("code-review-example", working_dir=".", concurrency=6) as dag:
     )
 
     review = fanout(
-        codex(
+        gaia(
             task_id="review",
             prompt=(
                 "Review {{ item.file }} independently.\n\n"
@@ -34,7 +34,7 @@ with Graph("code-review-example", working_dir=".", concurrency=6) as dag:
         ],
     )
 
-    merge = claude(
+    merge = gaia(
         task_id="merge",
         prompt=(
             "Merge these code review findings into a prioritized summary.\n\n"
@@ -51,4 +51,5 @@ with Graph("code-review-example", working_dir=".", concurrency=6) as dag:
     scan >> review
     [scan, review] >> merge
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

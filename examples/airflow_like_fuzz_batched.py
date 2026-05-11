@@ -1,9 +1,11 @@
-from agentflow import Graph, codex, fanout, merge
+"""128-shard Gaia fuzz swarm with batched reducers and periodic monitoring."""
+
+from agentflow import Graph, fanout, gaia, merge
 
 
 with Graph(
     "airflow-like-fuzz-batched-128",
-    description="Python-authored 128-shard Codex fuzz swarm with batched reducers.",
+    description="Python-authored 128-shard Gaia fuzz swarm with batched reducers.",
     working_dir="./codex_fuzz_python_128",
     concurrency=32,
     fail_fast=True,
@@ -12,7 +14,7 @@ with Graph(
         "capture": "final",
     },
     agent_defaults={
-        "codex": {
+        "gaia": {
             "model": "gpt-5.4",
             "retries": 1,
             "retry_backoff_seconds": 2,
@@ -24,7 +26,7 @@ with Graph(
         }
     },
 ) as dag:
-    init = codex(
+    init = gaia(
         task_id="init",
         tools="read_write",
         timeout_seconds=60,
@@ -49,14 +51,14 @@ with Graph(
     )
 
     fuzzer = fanout(
-        codex(
+        gaia(
             task_id="fuzzer",
             tools="read_write",
             target={"cwd": "{{ item.workspace }}"},
             timeout_seconds=3600,
             retries=2,
             prompt=(
-                "You are Codex fuzz shard {{ item.number }} of {{ item.count }} in an authorized campaign.\n\n"
+                "You are Gaia fuzz shard {{ item.number }} of {{ item.count }} in an authorized campaign.\n\n"
                 "Shared workspace:\n"
                 "- Root: {{ pipeline.working_dir }}\n"
                 "- Shard dir: {{ item.workspace }}\n"
@@ -77,7 +79,7 @@ with Graph(
     )
 
     batch_merge = merge(
-        codex(
+        gaia(
             task_id="batch_merge",
             timeout_seconds=300,
             prompt=(
@@ -100,7 +102,7 @@ with Graph(
         size=16,
     )
 
-    monitor = codex(
+    monitor = gaia(
         task_id="monitor",
         tools="read_write",
         timeout_seconds=300,
@@ -134,7 +136,7 @@ with Graph(
         ),
     )
 
-    final = codex(
+    final = gaia(
         task_id="merge",
         timeout_seconds=300,
         prompt=(
@@ -163,4 +165,5 @@ with Graph(
     fuzzer >> batch_merge
     [batch_merge, monitor] >> final
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

@@ -1,6 +1,6 @@
-"""Dependency-focused audit pipeline across a fixed package list."""
+"""Dependency-focused Gaia audit pipeline across a fixed package list."""
 
-from agentflow import Graph, claude, codex, fanout
+from agentflow import Graph, fanout, gaia
 
 
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
 
 with Graph("dependency-audit", working_dir=".", concurrency=7) as dag:
     dependency_audit = fanout(
-        codex(
+        gaia(
             task_id="dependency_audit",
             prompt=(
                 "Audit the Python dependency `{{ item.dep }}` from pyproject.toml.\n\n"
@@ -31,7 +31,7 @@ with Graph("dependency-audit", working_dir=".", concurrency=7) as dag:
         dependencies,
     )
 
-    executive_summary = claude(
+    executive_summary = gaia(
         task_id="executive_summary",
         prompt=(
             "Synthesize these dependency audit findings into an executive summary for engineering leadership.\n"
@@ -46,4 +46,5 @@ with Graph("dependency-audit", working_dir=".", concurrency=7) as dag:
 
     dependency_audit >> executive_summary
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

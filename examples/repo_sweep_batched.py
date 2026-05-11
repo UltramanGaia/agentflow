@@ -1,21 +1,21 @@
-"""Static large-scale repository sweep with count fanout and batched reducers."""
+"""Static large-scale Gaia repository sweep with count fanout and batched reducers."""
 
-from agentflow import Graph, codex, fanout, merge
+from agentflow import Graph, fanout, gaia, merge
 
 
 with Graph(
-    "codex-repo-sweep-batched-128",
-    description="Static 128-shard Codex repository sweep with batched reducers for maintainer review.",
+    "gaia-repo-sweep-batched-128",
+    description="Static 128-shard Gaia repository sweep with batched reducers for maintainer review.",
     working_dir="./codex_repo_sweep_batched_128",
     concurrency=32,
     node_defaults={
-        "agent": "codex",
+        "agent": "gaia",
         "tools": "read_only",
         "capture": "final",
         "timeout_seconds": 900,
     },
     agent_defaults={
-        "codex": {
+        "gaia": {
             "model": "gpt-5.4",
             "retries": 1,
             "retry_backoff_seconds": 1,
@@ -23,10 +23,10 @@ with Graph(
         }
     },
 ) as dag:
-    prepare = codex(
+    prepare = gaia(
         task_id="prepare",
         prompt=(
-            "Inspect the repository and write shared instructions for a 128-shard Codex maintainer sweep.\n"
+            "Inspect the repository and write shared instructions for a 128-shard Gaia maintainer sweep.\n"
             "\n"
             "Review goal:\n"
             "- Focus on bugs, risky code paths, and missing tests.\n"
@@ -38,10 +38,10 @@ with Graph(
     )
 
     sweep = fanout(
-        codex(
+        gaia(
             task_id="sweep",
             prompt=(
-                "You are Codex repository sweep shard {{ item.number }} of {{ item.count }}.\n"
+                "You are Gaia repository sweep shard {{ item.number }} of {{ item.count }}.\n"
                 "\n"
                 "Shared plan:\n"
                 "{{ nodes.prepare.output }}\n"
@@ -60,7 +60,7 @@ with Graph(
     )
 
     batch_merge = merge(
-        codex(
+        gaia(
             task_id="batch_merge",
             prompt=(
                 "Prepare the maintainer handoff for review batch {{ item.number }} of {{ item.count }}.\n"
@@ -99,7 +99,7 @@ with Graph(
         size=16,
     )
 
-    final = codex(
+    final = gaia(
         task_id="merge",
         prompt=(
             "Consolidate this 128-shard repository sweep into a maintainer summary.\n"
@@ -131,4 +131,5 @@ with Graph(
     sweep >> batch_merge
     batch_merge >> final
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

@@ -9,7 +9,7 @@ import { ModalDialog } from "../../components/feedback/ModalDialog";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { PageSection } from "../../components/layout/PageSection";
 import { StatusBadge } from "../../components/status/StatusBadge";
-import { cancelRun, rerunNode, rerunRun, resumeRun } from "../../features/runs/api";
+import { cancelRun, rerunRun, resumeRun } from "../../features/runs/api";
 import {
   buildInstanceGraph,
   buildRunLayout,
@@ -32,6 +32,51 @@ function formatDate(value?: string | null) {
   return new Date(value).toLocaleString();
 }
 
+function formatStatusLabel(value?: string | null) {
+  if (!value) {
+    return "n/a";
+  }
+  return value.replace(/_/g, " ");
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = value / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function classifyArtifact(name: string) {
+  if (name.endsWith(".log")) {
+    return "log";
+  }
+  if (name.endsWith(".json") || name.endsWith(".yaml") || name.endsWith(".yml")) {
+    return "structured";
+  }
+  return "file";
+}
+
+function isPreviewableArtifact(name: string) {
+  const lowered = name.toLowerCase();
+  return [".log", ".txt", ".json", ".yaml", ".yml", ".md", ".csv", ".xml"].some((suffix) => lowered.endsWith(suffix));
+}
+
+interface ArtifactSelection {
+  key: string;
+  nodeId: string;
+  nodeStatus: string;
+  nodeAgent: string;
+  name: string;
+  size: number;
+}
+
 interface RunDetailWorkspaceProps {
   detail: RunDetail;
   runId: string;
@@ -47,6 +92,7 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
   const [activeTab, setActiveTab] = useState<DiagnosticTab>("logs");
   const [eventFilter, setEventFilter] = useState("all");
   const [isNodeDialogOpen, setIsNodeDialogOpen] = useState(false);
+  const [selectedArtifactKey, setSelectedArtifactKey] = useState<string | null>(null);
 
   const actionMutation = useMutation({
     mutationFn: async (action: "cancel" | "resume" | "rerun") => {
@@ -73,25 +119,6 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
     },
     onError: (error: Error) => {
       pushToast({ tone: "danger", title: "Run action failed", description: error.message });
-    },
-  });
-
-  const rerunNodeMutation = useMutation({
-    mutationFn: async (nodeId: string) => rerunNode(runId, nodeId),
-    onSuccess: async (payload, nodeId) => {
-      const nextRunId = payload.redirected_run_id ?? payload.run.id;
-      await queryClient.invalidateQueries({ queryKey: ["runs"] });
-      pushToast({
-        tone: "success",
-        title: "Node rerun queued",
-        description: `${nodeId} moved into run ${nextRunId}.`,
-      });
-      if (nextRunId) {
-        onNavigateRun?.(nextRunId);
-      }
-    },
-    onError: (error: Error) => {
-      pushToast({ tone: "danger", title: "Node rerun failed", description: error.message });
     },
   });
 
@@ -125,6 +152,10 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
     return activeGraph.nodes.find((node) => node.id === selectedNodeId) ?? activeGraph.nodes[0] ?? null;
   }, [activeGraph, selectedNodeId]);
 
+  useEffect(() => {
+    setSelectedArtifactKey(null);
+  }, [activeTab, selectedGraphNode?.id]);
+
   const selectedRunNodes = useMemo(() => {
     if (!selectedGraphNode) {
       return [];
@@ -134,6 +165,18 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
   }, [detail, selectedGraphNode]);
 
   const selectedSingleNode = selectedRunNodes.length === 1 ? selectedRunNodes[0] : null;
+  const artifactItems: ArtifactSelection[] = selectedRunNodes.flatMap((node) =>
+    node.artifacts.map((artifact) => ({
+      key: `${node.id}:${artifact.name}`,
+      nodeId: node.id,
+      nodeStatus: node.status,
+      nodeAgent: node.agent,
+      name: artifact.name,
+      size: artifact.size,
+    })),
+  );
+  const selectedArtifact = artifactItems.find((artifact) => artifact.key === selectedArtifactKey) ?? artifactItems[0] ?? null;
+  const totalArtifacts = selectedRunNodes.reduce((count, node) => count + node.artifacts.length, 0);
   const preferredLogArtifact = selectedSingleNode?.artifacts.find(
     (artifact) => artifact.name === "stderr.log" || artifact.name === "stdout.log",
   );
@@ -141,6 +184,11 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
     queryKey: ["run-log", runId, selectedSingleNode?.id, preferredLogArtifact?.name],
     queryFn: () => requestText(`/api/runs/${runId}/nodes/${selectedSingleNode?.id}/artifacts/${preferredLogArtifact?.name}`),
     enabled: Boolean(runId && selectedSingleNode?.id && preferredLogArtifact?.name),
+  });
+  const artifactPreviewQuery = useQuery({
+    queryKey: ["artifact-preview", runId, selectedArtifact?.nodeId, selectedArtifact?.name],
+    queryFn: () => requestText(`/api/runs/${runId}/nodes/${selectedArtifact?.nodeId}/artifacts/${selectedArtifact?.name}`),
+    enabled: Boolean(runId && selectedArtifact?.nodeId && selectedArtifact?.name && isPreviewableArtifact(selectedArtifact.name)),
   });
 
   const activeNodes = buildRunLayout(activeGraph.nodes, {
@@ -172,6 +220,9 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
   const canResume = detail.run.status === "failed" || detail.run.status === "cancelled";
   const activeAction = actionMutation.variables;
   const dialogTitle = selectedGraphNode ? `${selectedGraphNode.title} diagnostics` : "Node diagnostics";
+  const dialogDescription = selectedSingleNode
+    ? `Focused inspection for ${selectedSingleNode.id}.`
+    : `Focused inspection for ${selectedGraphNode?.memberNodeIds.length ?? 0} runtime instances.`;
 
   return (
     <div className="page-stack">
@@ -298,134 +349,215 @@ export function RunDetailWorkspace({ detail, runId, onNavigateRun, embedded = fa
               onChange={setActiveTab}
             />
           }
-          description="Focused node inspection from the runtime map."
+          description={dialogDescription}
           onClose={() => setIsNodeDialogOpen(false)}
           title={dialogTitle}
         >
-          {activeTab === "logs" ? (
-            selectedSingleNode ? (
-              preferredLogArtifact ? (
-                logQuery.isLoading ? (
-                  <div className="event-row">Loading {preferredLogArtifact.name}...</div>
-                ) : logQuery.error ? (
-                  <InlineNotice tone="danger">{logQuery.error.message}</InlineNotice>
+          <div className="diagnostic-layout">
+            <div className="diagnostic-main">
+              {activeTab === "logs" ? (
+                selectedSingleNode ? (
+                  preferredLogArtifact ? (
+                    logQuery.isLoading ? (
+                      <div className="event-row">Loading {preferredLogArtifact.name}...</div>
+                    ) : logQuery.error ? (
+                      <InlineNotice tone="danger">{logQuery.error.message}</InlineNotice>
+                    ) : (
+                      <div className="diagnostic-stack">
+                        <div className="inline-meta panel">
+                          <span>{preferredLogArtifact.name}</span>
+                          <span>{selectedSingleNode.id}</span>
+                        </div>
+                        <pre className="log-viewer">{logQuery.data ?? "No log output available yet."}</pre>
+                      </div>
+                    )
+                  ) : (
+                    <InlineNotice tone="warning">The selected node has no stdout/stderr artifact yet.</InlineNotice>
+                  )
                 ) : (
-                  <pre className="log-viewer">{logQuery.data ?? "No log output available yet."}</pre>
+                  <InlineNotice tone="warning">Select a single runtime instance to inspect stdout or stderr directly.</InlineNotice>
                 )
-              ) : (
-                <InlineNotice tone="warning">The selected node has no stdout/stderr artifact yet.</InlineNotice>
-              )
-            ) : (
-              <InlineNotice tone="warning">Select a single runtime instance to inspect stdout or stderr directly.</InlineNotice>
-            )
-          ) : null}
+              ) : null}
 
-          {activeTab === "events" ? (
-            <div className="diagnostic-stack">
-              <label className="field">
-                <span className="field-label">Event filter</span>
-                <select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)}>
-                  <option value="all">All events</option>
-                  {availableEventTypes.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="event-list">
-                {filteredEvents.length ? (
-                  filteredEvents.slice(-80).map((event, index) => (
-                    <div className="event-row" key={`${event.type}-${index}`}>
-                      <div className="list-row-head">
-                        <strong>{event.type}</strong>
-                        <span className="muted">{formatDate(event.timestamp)}</span>
-                      </div>
-                      <div className="run-card-meta">
-                        <span>{event.node_id ?? "run-wide event"}</span>
-                      </div>
-                      <pre>{JSON.stringify(event.data ?? {}, null, 2)}</pre>
+              {activeTab === "events" ? (
+                <div className="diagnostic-stack">
+                  <div className="inline-meta panel">
+                    <span>{filteredEvents.length} matching event(s)</span>
+                    <label className="field diagnostic-inline-filter">
+                      <span className="field-label">Event filter</span>
+                      <select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)}>
+                        <option value="all">All events</option>
+                        {availableEventTypes.map((type) => (
+                          <option key={type} value={type}>
+                            {type}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="event-list">
+                    {filteredEvents.length ? (
+                      filteredEvents.slice(-80).map((event, index) => (
+                        <div className="event-row" key={`${event.type}-${index}`}>
+                          <div className="list-row-head">
+                            <strong>{event.type}</strong>
+                            <span className="muted">{formatDate(event.timestamp)}</span>
+                          </div>
+                          <div className="run-card-meta">
+                            <span>{event.node_id ?? "run-wide event"}</span>
+                          </div>
+                          <pre>{JSON.stringify(event.data ?? {}, null, 2)}</pre>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="event-row">No events match this selection.</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              {activeTab === "artifacts" ? (
+                selectedRunNodes.length ? (
+                  <div className="diagnostic-stack">
+                    <div className="inline-meta panel">
+                      <span>{totalArtifacts} artifact(s)</span>
+                      <span>
+                        {selectedArtifact ? `Previewing ${selectedArtifact.name}` : `Across ${selectedRunNodes.length} instance(s)`}
+                      </span>
                     </div>
-                  ))
+                    <div className="artifact-browser">
+                      <div className="artifact-groups">
+                        {selectedRunNodes.map((node) => (
+                          <section className="artifact-group panel" key={node.id}>
+                            <div className="list-row-head">
+                              <div>
+                                <div className="list-title">{node.id}</div>
+                                <div className="muted">{node.agent}</div>
+                              </div>
+                              <StatusBadge status={node.status} />
+                            </div>
+                            <div className="run-card-meta">
+                              <span>{node.artifacts.length} artifact(s)</span>
+                              <span>Finished {formatDate(node.finished_at)}</span>
+                            </div>
+                            {node.artifacts.length ? (
+                              <div className="artifact-grid">
+                                {node.artifacts.map((artifact) => {
+                                  const artifactKind = classifyArtifact(artifact.name);
+                                  const artifactKey = `${node.id}:${artifact.name}`;
+                                  const isActive = selectedArtifact?.key === artifactKey;
+                                  return (
+                                    <button
+                                      className={`artifact-card${isActive ? " active" : ""}`}
+                                      key={artifactKey}
+                                      onClick={() => setSelectedArtifactKey(artifactKey)}
+                                      type="button"
+                                    >
+                                      <div className="artifact-card-top">
+                                        <span className={`artifact-kind artifact-kind-${artifactKind}`}>{artifactKind}</span>
+                                        <span className="muted">{formatBytes(artifact.size)}</span>
+                                      </div>
+                                      <div className="artifact-name">{artifact.name}</div>
+                                      <div className="artifact-card-footer">
+                                        <span className="muted">{node.id}</span>
+                                        <span className="artifact-card-action">Preview</span>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="event-row">No artifacts produced for this instance.</div>
+                            )}
+                          </section>
+                        ))}
+                      </div>
+                      <div className="artifact-preview panel">
+                        {selectedArtifact ? (
+                          <div className="diagnostic-stack">
+                            <div className="list-row-head">
+                              <div>
+                                <div className="artifact-name">{selectedArtifact.name}</div>
+                                <div className="run-card-meta">
+                                  <span>{selectedArtifact.nodeId}</span>
+                                  <span>{selectedArtifact.nodeAgent}</span>
+                                  <span>{formatBytes(selectedArtifact.size)}</span>
+                                </div>
+                              </div>
+                              <StatusBadge status={selectedArtifact.nodeStatus} />
+                            </div>
+                            {isPreviewableArtifact(selectedArtifact.name) ? (
+                              artifactPreviewQuery.isLoading ? (
+                                <div className="event-row">Loading preview...</div>
+                              ) : artifactPreviewQuery.error ? (
+                                <InlineNotice tone="danger">{artifactPreviewQuery.error.message}</InlineNotice>
+                              ) : (
+                                <pre className="log-viewer artifact-preview-content">
+                                  {artifactPreviewQuery.data ?? "No preview content available."}
+                                </pre>
+                              )
+                            ) : (
+                              <InlineNotice tone="info">
+                                This artifact is not previewable inline yet. Use download if you need the raw file.
+                              </InlineNotice>
+                            )}
+                            <div className="artifact-preview-actions">
+                              <a
+                                className="button"
+                                download={selectedArtifact.name}
+                                href={`/api/runs/${runId}/nodes/${selectedArtifact.nodeId}/artifacts/${selectedArtifact.name}`}
+                              >
+                                Download
+                              </a>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="event-row">Select an artifact to inspect it here.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 ) : (
-                  <div className="event-row">No events match this selection.</div>
-                )}
-              </div>
-            </div>
-          ) : null}
+                  <EmptySelection />
+                )
+              ) : null}
 
-          {activeTab === "artifacts" ? (
-            selectedRunNodes.length ? (
-              <div className="artifact-list">
-                {selectedRunNodes.flatMap((node) =>
-                  node.artifacts.map((artifact) => (
-                    <div className="artifact-row" key={`${node.id}-${artifact.name}`}>
-                      <div>
-                        <strong>{artifact.name}</strong>
-                        <div className="muted">{node.id}</div>
+              {activeTab === "overview" ? (
+                <div className="diagnostic-shell">
+                  <div className="inspector-grid">
+                    {selectedRunNodes.map((node) => (
+                      <div className="list-item" key={node.id}>
+                        <div className="list-row-head">
+                          <div>
+                            <div className="list-title">{node.id}</div>
+                            <div className="muted">{node.agent}</div>
+                          </div>
+                          <StatusBadge status={node.status} />
+                        </div>
+                        <div className="run-card-meta">
+                          <span>Started {formatDate(node.started_at)}</span>
+                          <span>Finished {formatDate(node.finished_at)}</span>
+                          <span>Attempts {node.attempts.length}</span>
+                          <span>Artifacts {node.artifacts.length}</span>
+                        </div>
+                        {node.attempts.length ? (
+                          <div className="diagnostic-attempt-list">
+                            {node.attempts.map((attempt) => (
+                              <div className="diagnostic-attempt-row" key={`${node.id}-${attempt.number}`}>
+                                <span>Attempt #{attempt.number}</span>
+                                <span>{formatStatusLabel(attempt.status)}</span>
+                                <span>Exit {attempt.exit_code ?? "n/a"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
-                      <a
-                        className="button"
-                        href={`/api/runs/${runId}/nodes/${node.id}/artifacts/${artifact.name}`}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        Open
-                      </a>
-                    </div>
-                  )),
-                )}
-              </div>
-            ) : (
-              <EmptySelection />
-            )
-          ) : null}
-
-          {activeTab === "overview" ? (
-            <div className="diagnostic-stack">
-              <div className="inspector-card active">
-                <div className="list-row-head">
-                  <div>
-                    <div className="inspector-title">{selectedGraphNode.title}</div>
-                    <div className="muted">{selectedGraphNode.agent}</div>
+                    ))}
                   </div>
-                  <StatusBadge status={selectedGraphNode.status} />
                 </div>
-                <div className="run-card-meta">
-                  <span>{selectedGraphNode.memberNodeIds.length} runtime instance(s)</span>
-                  {selectedGraphNode.subtitle ? <span>{selectedGraphNode.subtitle}</span> : null}
-                  {selectedGraphNode.meta ? <span>{selectedGraphNode.meta}</span> : null}
-                </div>
-                {selectedSingleNode ? (
-                  <button
-                    className="button"
-                    disabled={rerunNodeMutation.isPending}
-                    onClick={() => rerunNodeMutation.mutate(selectedSingleNode.id)}
-                    type="button"
-                  >
-                    {rerunNodeMutation.isPending ? "Queueing node rerun..." : "Rerun node"}
-                  </button>
-                ) : null}
-              </div>
-              <div className="list">
-                {selectedRunNodes.map((node) => (
-                  <div className="list-item" key={node.id}>
-                    <div className="list-row-head">
-                      <div>
-                        <div className="list-title">{node.id}</div>
-                        <div className="muted">{node.agent}</div>
-                      </div>
-                      <StatusBadge status={node.status} />
-                    </div>
-                    <div className="run-card-meta">
-                      <span>Started {formatDate(node.started_at)}</span>
-                      <span>Finished {formatDate(node.finished_at)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
         </ModalDialog>
       ) : null}
     </div>

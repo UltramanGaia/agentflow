@@ -1,9 +1,11 @@
-from agentflow import Graph, codex, fanout, merge
+"""128-shard Gaia fuzz matrix with grouped reducers per target family."""
+
+from agentflow import Graph, fanout, gaia, merge
 
 
 with Graph(
     "airflow-like-fuzz-grouped-128",
-    description="Python-authored 128-shard Codex fuzz matrix with grouped reducers.",
+    description="Python-authored 128-shard Gaia fuzz matrix with grouped reducers.",
     working_dir="./codex_fuzz_python_grouped_128",
     concurrency=32,
     fail_fast=True,
@@ -12,7 +14,7 @@ with Graph(
         "capture": "final",
     },
     agent_defaults={
-        "codex": {
+        "gaia": {
             "model": "gpt-5.4",
             "retries": 1,
             "retry_backoff_seconds": 2,
@@ -24,7 +26,7 @@ with Graph(
         }
     },
 ) as dag:
-    init = codex(
+    init = gaia(
         task_id="init",
         tools="read_write",
         timeout_seconds=60,
@@ -49,14 +51,14 @@ with Graph(
     )
 
     fuzzer = fanout(
-        codex(
+        gaia(
             task_id="fuzzer",
             tools="read_write",
             target={"cwd": "{{ item.workspace }}"},
             timeout_seconds=3600,
             retries=2,
             prompt=(
-                "You are Codex fuzz shard {{ item.number }} of {{ item.count }} in an authorized campaign.\n\n"
+                "You are Gaia fuzz shard {{ item.number }} of {{ item.count }} in an authorized campaign.\n\n"
                 "Campaign inputs:\n"
                 "- Target: {{ item.target }}\n"
                 "- Corpus family: {{ item.corpus }}\n"
@@ -105,7 +107,7 @@ with Graph(
     )
 
     family_merge = merge(
-        codex(
+        gaia(
             task_id="family_merge",
             timeout_seconds=300,
             prompt=(
@@ -140,7 +142,7 @@ with Graph(
         by=["target", "corpus"],
     )
 
-    final = codex(
+    final = gaia(
         task_id="merge",
         timeout_seconds=300,
         prompt=(
@@ -169,4 +171,5 @@ with Graph(
     fuzzer >> family_merge
     family_merge >> final
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

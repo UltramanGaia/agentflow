@@ -282,6 +282,38 @@ describe("RunDetailPage", () => {
       expect(screen.getByText("traceback line")).toBeInTheDocument();
     });
   });
+
+  it("previews artifacts inline instead of opening a new page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/runs/run-123") {
+        return jsonResponse(runDetailPayload);
+      }
+      if (url === "/api/runs/run-123/nodes/apply/artifacts/stderr.log") {
+        return textResponse("traceback line");
+      }
+      return jsonResponse({});
+    });
+
+    render(<RunDetailPage />, {
+      wrapper: createWrapper("/runs/run-123", "/runs/:runId"),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Deploy pipeline" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Inspect apply" }));
+    await user.click(screen.getAllByRole("button", { name: "Artifacts" })[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByText("Previewing stderr.log")).toBeInTheDocument();
+    });
+    expect(screen.getByText("traceback line")).toBeInTheDocument();
+    expect(screen.getByText("Preview")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download" })).toBeInTheDocument();
+  });
 });
 
 describe("GraphEditorPage", () => {

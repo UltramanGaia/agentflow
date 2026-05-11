@@ -1,9 +1,9 @@
 """Iterative implementation loop that rewrites based on review feedback."""
 
-from agentflow import Graph, codex, claude
+from agentflow import Graph, gaia
 
-with Graph("iterative-implementation", max_iterations=5) as g:
-    write = codex(
+with Graph("iterative-implementation", max_iterations=5) as dag:
+    write = gaia(
         task_id="write",
         prompt=(
             "You are implementing a Python function that validates email addresses.\n"
@@ -18,7 +18,7 @@ with Graph("iterative-implementation", max_iterations=5) as g:
         ),
         tools="read_write",
     )
-    review = claude(
+    review = gaia(
         task_id="review",
         prompt=(
             "Review this implementation for correctness and completeness.\n\n"
@@ -28,7 +28,7 @@ with Graph("iterative-implementation", max_iterations=5) as g:
         ),
         success_criteria=[{"kind": "output_contains", "value": "LGTM"}],
     )
-    summary = codex(
+    summary = gaia(
         task_id="summary",
         prompt=(
             "Summarize the iterative implementation process.\n"
@@ -41,4 +41,5 @@ with Graph("iterative-implementation", max_iterations=5) as g:
     review.on_failure >> write  # loop until LGTM
     review >> summary           # proceed to summary on success
 
-print(g.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

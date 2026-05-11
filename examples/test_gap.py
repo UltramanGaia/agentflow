@@ -1,10 +1,10 @@
-"""Test gap analysis with fanout over risky modules."""
+"""Gaia test gap analysis with fanout over risky modules."""
 
-from agentflow import Graph, codex, claude, fanout
+from agentflow import Graph, fanout, gaia
 
 
 with Graph("test-gap-analysis", working_dir=".", concurrency=6) as dag:
-    analyze = codex(
+    analyze = gaia(
         task_id="analyze",
         prompt=(
             "Inspect the repository and identify source modules with missing or weak test coverage.\n"
@@ -14,7 +14,7 @@ with Graph("test-gap-analysis", working_dir=".", concurrency=6) as dag:
     )
 
     suggest = fanout(
-        codex(
+        gaia(
             task_id="suggest",
             prompt=(
                 "You are generating targeted test ideas for {{ item.module }}.\n\n"
@@ -33,7 +33,7 @@ with Graph("test-gap-analysis", working_dir=".", concurrency=6) as dag:
         ],
     )
 
-    prioritize = claude(
+    prioritize = gaia(
         task_id="prioritize",
         prompt=(
             "Prioritize the proposed tests by risk and impact.\n\n"
@@ -52,4 +52,5 @@ with Graph("test-gap-analysis", working_dir=".", concurrency=6) as dag:
     analyze >> suggest
     [analyze, suggest] >> prioritize
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())

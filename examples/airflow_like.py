@@ -1,4 +1,4 @@
-"""Smallest Python-authored Gaia DAG reference."""
+"""Smallest Python-authored Gaia pipeline reference."""
 
 from agentflow import Graph, gaia
 
@@ -32,4 +32,5 @@ with Graph("airflow-like-example", working_dir=".", concurrency=3) as dag:
     plan >> [implement, review]
     [implement, review] >> merge
 
-print(dag.to_json())
+if __name__ == "__main__":
+    print(dag.to_json())
