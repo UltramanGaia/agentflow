@@ -13,25 +13,49 @@ import type { RunNode } from "../../types/api";
 const nodeTypes: NodeTypes = { agentNode: AgentNode };
 
 const NODE_WIDTH = 220;
-const NODE_HEIGHT = 132;
+const NODE_HEIGHT = 152;
 const COLUMN_GAP = 120;
 const ROW_GAP = 44;
 const PADDING_X = 80;
 const PADDING_Y = 80;
 
-function buildRunLayout(runNodes: RunNode[]): Node[] {
-  const nodeById = new Map(runNodes.map((node) => [node.id, node]));
+type ViewMode = "stage" | "instance";
+
+interface RuntimeGraphNode {
+  id: string;
+  title: string;
+  agent: string;
+  status: string;
+  depends_on: string[];
+  memberNodeIds: string[];
+  subtitle?: string;
+  meta?: string;
+}
+
+interface RuntimeGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+interface RuntimeGraphModel {
+  nodes: RuntimeGraphNode[];
+  edges: RuntimeGraphEdge[];
+}
+
+function buildRunLayout(graphNodes: RuntimeGraphNode[]): Node[] {
+  const nodeById = new Map(graphNodes.map((node) => [node.id, node]));
   const layerById = new Map<string, number>();
   const indegree = new Map<string, number>();
   const downstream = new Map<string, string[]>();
-  const order = new Map(runNodes.map((node, index) => [node.id, index]));
+  const order = new Map(graphNodes.map((node, index) => [node.id, index]));
 
-  runNodes.forEach((node) => {
+  graphNodes.forEach((node) => {
     indegree.set(node.id, 0);
     downstream.set(node.id, []);
   });
 
-  runNodes.forEach((node) => {
+  graphNodes.forEach((node) => {
     node.depends_on.forEach((dependency) => {
       if (!nodeById.has(dependency)) {
         return;
@@ -41,7 +65,7 @@ function buildRunLayout(runNodes: RunNode[]): Node[] {
     });
   });
 
-  const queue = runNodes
+  const queue = graphNodes
     .filter((node) => (indegree.get(node.id) ?? 0) === 0)
     .sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
     .map((node) => node.id);
@@ -61,7 +85,7 @@ function buildRunLayout(runNodes: RunNode[]): Node[] {
     }
   }
 
-  const remainingIds = runNodes
+  const remainingIds = graphNodes
     .map((node) => node.id)
     .filter((nodeId) => !topoOrder.includes(nodeId))
     .sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
@@ -88,7 +112,7 @@ function buildRunLayout(runNodes: RunNode[]): Node[] {
 
   const maxColumnSize = Math.max(...Array.from(columns.values(), (column) => column.length), 1);
 
-  return runNodes.map<Node>((node) => {
+  return graphNodes.map<Node>((node) => {
     const layer = layerById.get(node.id) ?? 0;
     const row = columns.get(layer)?.indexOf(node.id) ?? 0;
     const columnSize = columns.get(layer)?.length ?? 1;
@@ -104,13 +128,129 @@ function buildRunLayout(runNodes: RunNode[]): Node[] {
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       data: {
-        title: node.id,
+        title: node.title,
         agent: node.agent,
         status: node.status,
+        subtitle: node.subtitle,
+        meta: node.meta,
       },
       selected: false,
     };
   });
+}
+
+function aggregateStatus(statuses: string[]): string {
+  const rank: Record<string, number> = {
+    failed: 0,
+    cancelled: 1,
+    cancelling: 2,
+    running: 3,
+    pending: 4,
+    queued: 5,
+    ready: 6,
+    completed: 7,
+  };
+  return [...statuses].sort((left, right) => (rank[left] ?? 999) - (rank[right] ?? 999))[0] ?? "pending";
+}
+
+function buildInstanceGraph(runNodes: RunNode[]): RuntimeGraphModel {
+  return {
+    nodes: runNodes.map((node) => {
+      const metaParts: string[] = [];
+      if (node.attempts.length > 1) {
+        metaParts.push(`${node.attempts.length} attempts`);
+      }
+      if (node.tick_count > 0) {
+        metaParts.push(`${node.tick_count} ticks`);
+      }
+      return {
+        id: node.id,
+        title: node.id,
+        agent: node.agent,
+        status: node.status,
+        depends_on: node.depends_on,
+        memberNodeIds: [node.id],
+        subtitle: node.fanout_group ? `fanout · ${node.fanout_group}` : undefined,
+        meta: metaParts.length ? metaParts.join(" · ") : undefined,
+      };
+    }),
+    edges: runNodes.flatMap((node) =>
+      node.depends_on.map((dependency) => ({
+        id: `${dependency}->${node.id}`,
+        source: dependency,
+        target: node.id,
+      })),
+    ),
+  };
+}
+
+function buildStageGraph(runNodes: RunNode[]): RuntimeGraphModel {
+  const nodeToGroup = new Map<string, string>();
+  const groupMembers = new Map<string, RunNode[]>();
+
+  runNodes.forEach((node) => {
+    const groupId = node.fanout_group ?? node.id;
+    nodeToGroup.set(node.id, groupId);
+    const members = groupMembers.get(groupId) ?? [];
+    members.push(node);
+    groupMembers.set(groupId, members);
+  });
+
+  const groupOrder = Array.from(groupMembers.keys()).sort((left, right) => {
+    const leftIndex = runNodes.findIndex((node) => (node.fanout_group ?? node.id) === left);
+    const rightIndex = runNodes.findIndex((node) => (node.fanout_group ?? node.id) === right);
+    return leftIndex - rightIndex;
+  });
+
+  const edgeMap = new Map<string, RuntimeGraphEdge>();
+  runNodes.forEach((node) => {
+    const targetGroup = nodeToGroup.get(node.id) ?? node.id;
+    node.depends_on.forEach((dependency) => {
+      const sourceGroup = nodeToGroup.get(dependency) ?? dependency;
+      if (sourceGroup === targetGroup) {
+        return;
+      }
+      const edgeId = `${sourceGroup}->${targetGroup}`;
+      edgeMap.set(edgeId, { id: edgeId, source: sourceGroup, target: targetGroup });
+    });
+  });
+
+  const nodes = groupOrder.map<RuntimeGraphNode>((groupId) => {
+    const members = groupMembers.get(groupId) ?? [];
+    const agentNames = Array.from(new Set(members.map((node) => node.agent)));
+    const totalAttempts = members.reduce((sum, node) => sum + Math.max(node.attempts.length, 1), 0);
+    const totalTicks = members.reduce((sum, node) => sum + node.tick_count, 0);
+    const metaParts: string[] = [];
+    if (totalAttempts > members.length) {
+      metaParts.push(`${totalAttempts} attempts`);
+    }
+    if (totalTicks > 0) {
+      metaParts.push(`${totalTicks} ticks`);
+    }
+    return {
+      id: groupId,
+      title: groupId,
+      agent: agentNames.length === 1 ? agentNames[0] : `${agentNames.length} agents`,
+      status: aggregateStatus(members.map((node) => node.status)),
+      depends_on: Array.from(
+        new Set(
+          members.flatMap((node) =>
+            node.depends_on
+              .map((dependency) => nodeToGroup.get(dependency) ?? dependency)
+              .filter((dependency) => dependency !== groupId),
+          ),
+        ),
+      ),
+      memberNodeIds: members.map((node) => node.id),
+      subtitle: members.length > 1 ? `${members.length} instances` : "1 instance",
+      meta: metaParts.length ? metaParts.join(" · ") : undefined,
+    };
+  });
+
+  return {
+    nodes,
+    edges: Array.from(edgeMap.values()),
+  };
 }
 
 export function RunDetailPage() {
@@ -118,6 +258,7 @@ export function RunDetailPage() {
   const queryClient = useQueryClient();
   const { runId } = useParams();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("stage");
   const [activeTab, setActiveTab] = useState<"overview" | "events" | "stdout" | "stderr" | "artifacts">("overview");
   useRunStream(runId);
   const runQuery = useQuery({
@@ -161,24 +302,47 @@ export function RunDetailPage() {
     },
   });
 
-  const selectedNode = useMemo(() => {
+  const runtimeGraphs = useMemo(() => {
     const detail = runQuery.data;
     if (!detail) {
       return null;
     }
-    return detail.graph.nodes.find((node) => node.id === selectedNodeId) ?? detail.graph.nodes[0] ?? null;
-  }, [runQuery.data, selectedNodeId]);
+    return {
+      instance: buildInstanceGraph(detail.graph.nodes),
+      stage: buildStageGraph(detail.graph.nodes),
+    };
+  }, [runQuery.data]);
+
+  const activeGraph = runtimeGraphs?.[viewMode] ?? null;
+
+  const selectedGraphNode = useMemo(() => {
+    if (!activeGraph) {
+      return null;
+    }
+    return activeGraph.nodes.find((node) => node.id === selectedNodeId) ?? activeGraph.nodes[0] ?? null;
+  }, [activeGraph, selectedNodeId]);
+
+  const selectedRunNodes = useMemo(() => {
+    const detail = runQuery.data;
+    if (!detail || !selectedGraphNode) {
+      return [];
+    }
+    const nodeById = new Map(detail.graph.nodes.map((node) => [node.id, node]));
+    return selectedGraphNode.memberNodeIds.map((nodeId) => nodeById.get(nodeId)).filter((node): node is RunNode => Boolean(node));
+  }, [runQuery.data, selectedGraphNode]);
+
+  const selectedSingleNode = selectedRunNodes.length === 1 ? selectedRunNodes[0] : null;
 
   const logQuery = useQuery({
-    queryKey: ["run-log", runId, selectedNode?.id, activeTab],
+    queryKey: ["run-log", runId, selectedSingleNode?.id, activeTab],
     queryFn: () =>
       requestText(
-        `/api/runs/${runId}/nodes/${selectedNode?.id}/artifacts/${activeTab === "stdout" ? "stdout.log" : "stderr.log"}`,
+        `/api/runs/${runId}/nodes/${selectedSingleNode?.id}/artifacts/${activeTab === "stdout" ? "stdout.log" : "stderr.log"}`,
       ),
     enabled:
-      Boolean(runId && selectedNode?.id) &&
+      Boolean(runId && selectedSingleNode?.id) &&
       (activeTab === "stdout" || activeTab === "stderr") &&
-      Boolean(selectedNode?.artifacts.some((artifact) => artifact.name === `${activeTab}.log`)),
+      Boolean(selectedSingleNode?.artifacts.some((artifact) => artifact.name === `${activeTab}.log`)),
   });
 
   if (runQuery.isLoading) {
@@ -187,16 +351,16 @@ export function RunDetailPage() {
   if (runQuery.error) {
     return <ErrorState message={runQuery.error.message} />;
   }
-  if (!runQuery.data) {
+  if (!runQuery.data || !activeGraph) {
     return <ErrorState message="Run detail not found." />;
   }
 
   const detail = runQuery.data;
-  const nodes = buildRunLayout(detail.graph.nodes).map((node) => ({
+  const nodes = buildRunLayout(activeGraph.nodes).map((node) => ({
     ...node,
-    selected: node.id === selectedNode?.id,
+    selected: node.id === selectedGraphNode?.id,
   }));
-  const edges = detail.graph.edges.map<Edge>((edge) => ({
+  const edges = activeGraph.edges.map<Edge>((edge) => ({
     ...edge,
     type: "smoothstep",
     markerEnd: {
@@ -226,6 +390,14 @@ export function RunDetailPage() {
               Rerun
             </button>
           </div>
+        </div>
+        <div className="tabs">
+          <button className={`tab${viewMode === "stage" ? " active" : ""}`} onClick={() => setViewMode("stage")} type="button">
+            Stage View
+          </button>
+          <button className={`tab${viewMode === "instance" ? " active" : ""}`} onClick={() => setViewMode("instance")} type="button">
+            Instance View
+          </button>
         </div>
         <div className="flow-panel">
           <ReactFlow
@@ -258,22 +430,33 @@ export function RunDetailPage() {
         </div>
         {activeTab === "overview" ? (
           <div className="list">
-            {detail.graph.nodes.map((node) => (
-              <div className="list-item" key={node.id}>
-                <div className="section-head compact">
-                  <button className="button" onClick={() => setSelectedNodeId(node.id)} type="button">
-                    {node.id}
-                  </button>
-                  <StatusBadge status={node.status} />
+            {activeGraph.nodes.map((node) => {
+              const memberCount = node.memberNodeIds.length;
+              return (
+                <div className="list-item" key={node.id}>
+                  <div className="section-head compact">
+                    <button className="button" onClick={() => setSelectedNodeId(node.id)} type="button">
+                      {node.title}
+                    </button>
+                    <StatusBadge status={node.status} />
+                  </div>
+                  <div className="muted">
+                    {node.agent}
+                    {memberCount > 1 ? ` · ${memberCount} instances` : ""}
+                    {node.meta ? ` · ${node.meta}` : ""}
+                  </div>
+                  <div className="row-wrap">
+                    {memberCount === 1 ? (
+                      <button className="button" onClick={() => rerunNodeMutation.mutate(node.memberNodeIds[0])} type="button">
+                        Rerun Node
+                      </button>
+                    ) : (
+                      <div className="muted">Switch to instance view to rerun a specific shard.</div>
+                    )}
+                  </div>
                 </div>
-                <div className="muted">{node.agent}</div>
-                <div className="row-wrap">
-                  <button className="button" onClick={() => rerunNodeMutation.mutate(node.id)} type="button">
-                    Rerun Node
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : null}
         {activeTab === "events" ? (
@@ -290,21 +473,94 @@ export function RunDetailPage() {
             ))}
           </div>
         ) : null}
-        {activeTab === "stdout" || activeTab === "stderr" ? <pre>{logQuery.data ?? "No data."}</pre> : null}
+        {activeTab === "stdout" || activeTab === "stderr" ? (
+          selectedSingleNode ? (
+            <pre>{logQuery.data ?? "No data."}</pre>
+          ) : (
+            <div className="muted">Select a single runtime instance in Instance View to inspect {activeTab}.</div>
+          )
+        ) : null}
         {activeTab === "artifacts" ? (
-          <div className="artifact-list">
-            {selectedNode?.artifacts.length ? (
-              selectedNode.artifacts.map((artifact) => (
-                <div className="artifact-row" key={artifact.name}>
-                  <a href={`/api/runs/${runId}/nodes/${selectedNode.id}/artifacts/${artifact.name}`} rel="noreferrer" target="_blank">
-                    {artifact.name}
-                  </a>
-                  <span className="muted">{artifact.size} bytes</span>
-                </div>
-              ))
+          selectedRunNodes.length ? (
+            selectedSingleNode ? (
+              <div className="artifact-list">
+                {selectedSingleNode.artifacts.length ? (
+                  selectedSingleNode.artifacts.map((artifact) => (
+                    <div className="artifact-row" key={artifact.name}>
+                      <a
+                        href={`/api/runs/${runId}/nodes/${selectedSingleNode.id}/artifacts/${artifact.name}`}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        {artifact.name}
+                      </a>
+                      <span className="muted">{artifact.size} bytes</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="muted">No artifacts.</div>
+                )}
+              </div>
             ) : (
-              <div className="muted">No artifacts.</div>
-            )}
+              <div className="artifact-list">
+                {selectedRunNodes.map((node) => (
+                  <div className="list-item" key={node.id}>
+                    <div className="section-head compact">
+                      <strong>{node.id}</strong>
+                      <StatusBadge status={node.status} />
+                    </div>
+                    {node.artifacts.length ? (
+                      node.artifacts.map((artifact) => (
+                        <div className="artifact-row" key={`${node.id}-${artifact.name}`}>
+                          <a href={`/api/runs/${runId}/nodes/${node.id}/artifacts/${artifact.name}`} rel="noreferrer" target="_blank">
+                            {artifact.name}
+                          </a>
+                          <span className="muted">{artifact.size} bytes</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="muted">No artifacts.</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : (
+            <div className="muted">No artifacts.</div>
+          )
+        ) : null}
+        {selectedGraphNode ? (
+          <div className="list-item">
+            <div className="section-head compact">
+              <strong>{selectedGraphNode.title}</strong>
+              <StatusBadge status={selectedGraphNode.status} />
+            </div>
+            <div className="muted">
+              {selectedGraphNode.agent}
+              {selectedGraphNode.memberNodeIds.length > 1 ? ` · ${selectedGraphNode.memberNodeIds.length} runtime instances` : ""}
+            </div>
+            {selectedRunNodes.map((node) => (
+              <div key={node.id}>
+                <div className="muted">
+                  {node.id}
+                  {node.attempts.length > 1 ? ` · ${node.attempts.length} attempts` : ""}
+                  {node.tick_count > 0 ? ` · ${node.tick_count} ticks` : ""}
+                </div>
+                {node.attempts.length ? (
+                  <pre>
+                    {node.attempts
+                      .map((attempt) => {
+                        const parts = [`attempt ${attempt.number}`, attempt.status];
+                        if (attempt.exit_code !== null && attempt.exit_code !== undefined) {
+                          parts.push(`exit ${attempt.exit_code}`);
+                        }
+                        return parts.join(" · ");
+                      })
+                      .join("\n")}
+                  </pre>
+                ) : null}
+              </div>
+            ))}
           </div>
         ) : null}
       </section>

@@ -9,6 +9,7 @@ from agentflow.specs import NodeStatus, RunRecord
 from agentflow.store import RunStore
 from server.api.schemas.run_view import (
     RunActionResponse,
+    RunNodeAttemptView,
     RunDetailView,
     RunEdgeView,
     RunGraphView,
@@ -109,18 +110,40 @@ class RunService:
         return RunActionResponse(run=run.model_dump(mode="json"), redirected_run_id=redirected)
 
     def _build_graph(self, record: RunRecord) -> RunGraphView:
+        fanout_group_by_node = {
+            member_id: group_id
+            for group_id, member_ids in record.pipeline.fanouts.items()
+            for member_id in member_ids
+        }
         nodes = [
             RunNodeView(
                 id=node.id,
                 agent=node.agent.value if hasattr(node.agent, "value") else str(node.agent),
                 prompt=node.prompt,
                 depends_on=list(node.depends_on),
+                fanout_group=node.fanout_group or fanout_group_by_node.get(node.id),
+                fanout_member=dict(node.fanout_member) if node.fanout_member else (
+                    {"node_id": node.id} if (node.fanout_group or fanout_group_by_node.get(node.id)) else None
+                ),
                 status=record.nodes[node.id].status.value,
                 started_at=record.nodes[node.id].started_at,
                 finished_at=record.nodes[node.id].finished_at,
                 exit_code=record.nodes[node.id].exit_code,
                 final_response=record.nodes[node.id].final_response,
                 output=record.nodes[node.id].output,
+                tick_count=record.nodes[node.id].tick_count,
+                attempts=[
+                    RunNodeAttemptView(
+                        number=attempt.number,
+                        status=attempt.status.value,
+                        started_at=attempt.started_at,
+                        finished_at=attempt.finished_at,
+                        exit_code=attempt.exit_code,
+                        success=attempt.success,
+                        success_details=list(attempt.success_details),
+                    )
+                    for attempt in record.nodes[node.id].attempts
+                ],
                 artifacts=self.list_node_artifacts(record.id, node.id),
             )
             for node in record.pipeline.nodes

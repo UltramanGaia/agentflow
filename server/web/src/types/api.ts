@@ -59,17 +59,31 @@ export const runNodeArtifactSchema = z.object({
   size: z.number(),
 });
 
+export const runNodeAttemptSchema = z.object({
+  number: z.number(),
+  status: z.string(),
+  started_at: z.string().nullable().optional(),
+  finished_at: z.string().nullable().optional(),
+  exit_code: z.number().nullable().optional(),
+  success: z.boolean().nullable().optional(),
+  success_details: z.array(z.string()).default([]),
+});
+
 export const runNodeSchema = z.object({
   id: z.string(),
   agent: z.string(),
   prompt: z.string(),
   depends_on: z.array(z.string()).default([]),
+  fanout_group: z.string().nullable().optional(),
+  fanout_member: z.record(z.string(), z.unknown()).nullable().optional(),
   status: z.string(),
   started_at: z.string().nullable().optional(),
   finished_at: z.string().nullable().optional(),
   exit_code: z.number().nullable().optional(),
   final_response: z.string().nullable().optional(),
   output: z.string().nullable().optional(),
+  tick_count: z.number().default(0),
+  attempts: z.array(runNodeAttemptSchema).default([]),
   artifacts: z.array(runNodeArtifactSchema).default([]),
 });
 
@@ -109,5 +123,6 @@ export type PipelineSpec = z.infer<typeof pipelineSpecSchema>;
 export type GraphSummary = z.infer<typeof graphSummarySchema>;
 export type GraphView = z.infer<typeof graphViewSchema>;
 export type RunSummary = z.infer<typeof runSummarySchema>;
+export type RunNodeAttempt = z.infer<typeof runNodeAttemptSchema>;
 export type RunNode = z.infer<typeof runNodeSchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;
