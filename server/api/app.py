@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from agentflow.orchestrator import Orchestrator
@@ -23,6 +23,7 @@ def create_app(
     runs_dir: str | Path | None = None,
     max_concurrent_runs: int = 2,
     allow_pipeline_path: bool | None = None,
+    web_dir: str | Path | None = None,
 ) -> FastAPI:
     workspace_path = Path(workspace_dir).expanduser()
     runs_path = Path(runs_dir).expanduser() if runs_dir is not None else workspace_path / "runs"
@@ -56,21 +57,36 @@ def create_app(
     app.include_router(runs_router)
     app.include_router(artifacts_router)
 
-    web_dir = Path(__file__).resolve().parents[1] / "web"
-    app.mount("/static", StaticFiles(directory=web_dir), name="static")
+    resolved_web_dir = Path(web_dir).expanduser() if web_dir is not None else Path(__file__).resolve().parents[1] / "web"
+    web_dist_dir = resolved_web_dir / "dist"
+    if (web_dist_dir / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=web_dist_dir / "assets"), name="assets")
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/")
-    def root() -> FileResponse:
-        return FileResponse(web_dir / "index.html")
+    def root():
+        if web_dist_dir.exists():
+            return FileResponse(web_dist_dir / "index.html")
+        return HTMLResponse(
+            "<h1>AgentFlow Web Build Missing</h1><p>Run <code>npm install && npm run build</code> in <code>server/web</code>.</p>",
+            status_code=503,
+        )
 
     @app.get("/{full_path:path}")
-    def spa(full_path: str) -> FileResponse:
+    def spa(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(web_dir / "index.html")
+        if not web_dist_dir.exists():
+            return HTMLResponse(
+                "<h1>AgentFlow Web Build Missing</h1><p>Run <code>npm install && npm run build</code> in <code>server/web</code>.</p>",
+                status_code=503,
+            )
+        asset_path = web_dist_dir / full_path
+        if asset_path.is_file():
+            return FileResponse(asset_path)
+        return FileResponse(web_dist_dir / "index.html")
 
     return app

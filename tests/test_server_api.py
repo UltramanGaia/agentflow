@@ -81,6 +81,24 @@ def test_runs_endpoints_read_persisted_runs(tmp_path: Path) -> None:
     assert events.json()[0]["type"] == "node_failed"
 
 
+def test_web_shell_served_from_dist(tmp_path: Path) -> None:
+    workspace = tmp_path / ".agentflow"
+    web_dir = tmp_path / "web"
+    dist_dir = web_dir / "dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!doctype html><title>AgentFlow Server</title><div id='root'></div>", encoding="utf-8")
+
+    client = TestClient(create_app(workspace_dir=workspace, web_dir=web_dir))
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "AgentFlow Server" in root.text
+
+    nested = client.get("/runs")
+    assert nested.status_code == 200
+    assert "AgentFlow Server" in nested.text
+
+
 def test_rerun_node_creates_new_run_for_terminal_run(tmp_path: Path) -> None:
     workspace = tmp_path / ".agentflow"
     runs_dir = workspace / "runs"
