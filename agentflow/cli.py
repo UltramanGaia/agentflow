@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -427,12 +428,80 @@ def _get_run_or_exit(store: RunStore, run_id: str, *, runs_dir: str) -> RunRecor
         raise typer.Exit(code=1) from exc
 
 
-def _run_pipeline(pipeline: PipelineSpec, runs_dir: str, max_concurrent_runs: int, output: OutputFormat) -> None:
+def _streamed_stdout_goes_to_stderr(output: OutputFormat) -> bool:
+    return output in {OutputFormat.JSON, OutputFormat.JSON_SUMMARY}
+
+
+def _emit_node_trace_to_cli(event: Any, *, output: OutputFormat) -> None:
+    if getattr(event, "type", None) != "node_trace":
+        return
+    data = getattr(event, "data", None)
+    if not isinstance(data, dict):
+        return
+    trace = data.get("trace")
+    if not isinstance(trace, dict):
+        return
+    source = trace.get("source")
+    if source not in {"stdout", "stderr"}:
+        return
+    content = trace.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raw = trace.get("raw")
+        if isinstance(raw, str):
+            content = raw
+        else:
+            return
+    node_id = getattr(event, "node_id", None) or trace.get("node_id") or "node"
+    suffix = "" if source == "stdout" else " stderr"
+    err = bool(source == "stderr" or (source == "stdout" and _streamed_stdout_goes_to_stderr(output)))
+    for line in content.splitlines():
+        typer.echo(f"[{node_id}{suffix}] {line}", err=err)
+
+
+async def _stream_run_events_to_cli(
+    store: RunStore,
+    run_id: str,
+    *,
+    output: OutputFormat,
+    completed_task: "asyncio.Task[RunRecord]",
+) -> None:
+    subscriber = await store.subscribe(run_id)
+    try:
+        while True:
+            try:
+                event = await asyncio.to_thread(subscriber.get, True, 0.1)
+            except queue.Empty:
+                if completed_task.done():
+                    break
+                continue
+            _emit_node_trace_to_cli(event, output=output)
+            if completed_task.done() and subscriber.empty():
+                break
+    finally:
+        await store.unsubscribe(run_id, subscriber)
+
+
+def _run_pipeline(
+    pipeline: PipelineSpec,
+    runs_dir: str,
+    max_concurrent_runs: int,
+    output: OutputFormat,
+    *,
+    tee_node_output: bool = False,
+) -> None:
     store, orchestrator = _build_runtime(runs_dir, max_concurrent_runs)
 
     async def _run() -> None:
         run_record = await orchestrator.submit(pipeline)
-        completed = await orchestrator.wait(run_record.id, timeout=None)
+        completed_task = asyncio.create_task(orchestrator.wait(run_record.id, timeout=None))
+        stream_task: asyncio.Task[None] | None = None
+        if tee_node_output:
+            stream_task = asyncio.create_task(
+                _stream_run_events_to_cli(store, run_record.id, output=output, completed_task=completed_task)
+            )
+        completed = await completed_task
+        if stream_task is not None:
+            await stream_task
         run_dir = store.run_dir(run_record.id)
         _echo_run_result(completed, output=output, run_dir=run_dir)
         raise typer.Exit(code=0 if _status_value(completed.status) == "completed" else 1)
@@ -440,8 +509,15 @@ def _run_pipeline(pipeline: PipelineSpec, runs_dir: str, max_concurrent_runs: in
     asyncio.run(_run())
 
 
-def _run_pipeline_path(path: str, runs_dir: str, max_concurrent_runs: int, output: OutputFormat) -> None:
-    _run_pipeline(_load_pipeline(path), runs_dir, max_concurrent_runs, output)
+def _run_pipeline_path(
+    path: str,
+    runs_dir: str,
+    max_concurrent_runs: int,
+    output: OutputFormat,
+    *,
+    tee_node_output: bool = False,
+) -> None:
+    _run_pipeline(_load_pipeline(path), runs_dir, max_concurrent_runs, output, tee_node_output=tee_node_output)
 
 
 def _is_click_testing_stream(stream: object) -> bool:
@@ -539,6 +615,11 @@ def rerun(
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
+    tee_node_output: bool = typer.Option(
+        False,
+        "--tee-node-output",
+        help="Also print node stdout/stderr to the agentflow CLI while the run is executing.",
+    ),
 ) -> None:
     store, orchestrator = _build_runtime(runs_dir, max_concurrent_runs)
 
@@ -548,7 +629,15 @@ def rerun(
         except KeyError as exc:
             typer.echo(f"Run `{run_id}` not found in `{runs_dir}`.", err=True)
             raise typer.Exit(code=1) from exc
-        completed = await orchestrator.wait(record.id, timeout=None)
+        completed_task = asyncio.create_task(orchestrator.wait(record.id, timeout=None))
+        stream_task: asyncio.Task[None] | None = None
+        if tee_node_output:
+            stream_task = asyncio.create_task(
+                _stream_run_events_to_cli(store, record.id, output=output, completed_task=completed_task)
+            )
+        completed = await completed_task
+        if stream_task is not None:
+            await stream_task
         _echo_run_result(completed, output=output, run_dir=_run_dir_for_record(store, record.id))
         raise typer.Exit(code=0 if _status_value(completed.status) == "completed" else 1)
 
@@ -564,6 +653,11 @@ def resume(
         OutputFormat.AUTO,
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
+    ),
+    tee_node_output: bool = typer.Option(
+        False,
+        "--tee-node-output",
+        help="Also print node stdout/stderr to the agentflow CLI while the run is executing.",
     ),
 ) -> None:
     """Resume a failed or cancelled run from where it left off.
@@ -584,7 +678,15 @@ def resume(
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from exc
         typer.echo(f"Resumed as new run `{record.id}` (preserving completed nodes from `{run_id}`).")
-        completed = await orchestrator.wait(record.id, timeout=None)
+        completed_task = asyncio.create_task(orchestrator.wait(record.id, timeout=None))
+        stream_task: asyncio.Task[None] | None = None
+        if tee_node_output:
+            stream_task = asyncio.create_task(
+                _stream_run_events_to_cli(store, record.id, output=output, completed_task=completed_task)
+            )
+        completed = await completed_task
+        if stream_task is not None:
+            await stream_task
         _echo_run_result(completed, output=output, run_dir=_run_dir_for_record(store, record.id))
         raise typer.Exit(code=0 if _status_value(completed.status) == "completed" else 1)
 
@@ -706,8 +808,13 @@ def run(
         "--output",
         help="Result output format. Defaults to `summary` on a terminal and `json` otherwise.",
     ),
+    tee_node_output: bool = typer.Option(
+        False,
+        "--tee-node-output",
+        help="Also print node stdout/stderr to the agentflow CLI while the run is executing.",
+    ),
 ) -> None:
-    _run_pipeline(_load_pipeline(path), runs_dir, max_concurrent_runs, output)
+    _run_pipeline(_load_pipeline(path), runs_dir, max_concurrent_runs, output, tee_node_output=tee_node_output)
 
 
 @app.command()
@@ -716,9 +823,14 @@ def smoke(
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
     output: OutputFormat = typer.Option(OutputFormat.SUMMARY, "--output", help="Result output format."),
+    tee_node_output: bool = typer.Option(
+        False,
+        "--tee-node-output",
+        help="Also print node stdout/stderr to the agentflow CLI while the run is executing.",
+    ),
 ) -> None:
     selected_path = path or default_smoke_pipeline_path()
-    _run_pipeline(_load_pipeline(selected_path), runs_dir, max_concurrent_runs, output)
+    _run_pipeline(_load_pipeline(selected_path), runs_dir, max_concurrent_runs, output, tee_node_output=tee_node_output)
 
 
 @app.command()
