@@ -6,18 +6,18 @@ export function LoadingState({ children }: PropsWithChildren) {
 
 export function ErrorState({ message }: { message: string }) {
   return (
-    <div className="panel state-panel">
+    <div className="panel state-panel tone-danger">
       <h2>Error</h2>
       <pre>{message}</pre>
     </div>
   );
 }
 
-export function EmptyState({ title, description }: { title: string; description: string }) {
+export function EmptyState({ title, description }: { title: string; description?: string }) {
   return (
-    <div className="empty-state">
+    <div className="empty-state panel panel-quiet">
       <strong>{title}</strong>
-      <span>{description}</span>
+      {description ? <span>{description}</span> : null}
     </div>
   );
 }

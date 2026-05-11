@@ -35,9 +35,15 @@ interface GraphEditorStore {
   setJsonMode: (jsonMode: boolean) => void;
   setExportContent: (content: string) => void;
   updateGraphMeta: (field: "name" | "description", value: string) => void;
+  updatePipelineSetting: (
+    field: "working_dir" | "concurrency" | "fail_fast" | "max_iterations" | "scratchboard" | "use_worktree",
+    value: string | number | boolean,
+  ) => void;
   updateSelectedNode: (rawNode: PipelineNode) => void;
+  setSelectedNodeDependencies: (dependsOn: string[]) => void;
   applyPipelineJson: (jsonText: string) => void;
   addNode: () => void;
+  addNodeWithTemplate: (template?: Partial<PipelineNode>) => void;
   removeSelectedNode: () => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -95,6 +101,35 @@ export const useGraphEditorStore = create<GraphEditorStore>((set, get) => ({
         flowNodes: toFlowNodes(draft, state.selectedNodeId),
       };
     }),
+  updatePipelineSetting: (field, value) =>
+    set((state) => {
+      const draft = cloneGraph(state.draft);
+      switch (field) {
+        case "working_dir":
+          draft.pipeline.working_dir = String(value);
+          break;
+        case "concurrency":
+          draft.pipeline.concurrency = Number(value);
+          break;
+        case "max_iterations":
+          draft.pipeline.max_iterations = Number(value);
+          break;
+        case "fail_fast":
+          draft.pipeline.fail_fast = Boolean(value);
+          break;
+        case "scratchboard":
+          draft.pipeline.scratchboard = Boolean(value);
+          break;
+        case "use_worktree":
+          draft.pipeline.use_worktree = Boolean(value);
+          break;
+      }
+      return {
+        draft,
+        dirty: true,
+        flowNodes: toFlowNodes(draft, state.selectedNodeId),
+      };
+    }),
   updateSelectedNode: (rawNode) =>
     set((state) => {
       if (!state.selectedNodeId) {
@@ -117,6 +152,24 @@ export const useGraphEditorStore = create<GraphEditorStore>((set, get) => ({
         flowEdges: toFlowEdges(draft.pipeline),
       };
     }),
+  setSelectedNodeDependencies: (dependsOn) =>
+    set((state) => {
+      if (!state.selectedNodeId) {
+        return state;
+      }
+      const draft = cloneGraph(state.draft);
+      const selectedNode = draft.pipeline.nodes.find((node) => node.id === state.selectedNodeId);
+      if (!selectedNode) {
+        return state;
+      }
+      selectedNode.depends_on = dependsOn.filter((dependency) => dependency !== selectedNode.id);
+      return {
+        draft,
+        dirty: true,
+        flowNodes: toFlowNodes(draft, state.selectedNodeId),
+        flowEdges: toFlowEdges(draft.pipeline),
+      };
+    }),
   applyPipelineJson: (jsonText) =>
     set((state) => {
       const draft = cloneGraph(state.draft);
@@ -129,6 +182,28 @@ export const useGraphEditorStore = create<GraphEditorStore>((set, get) => ({
         selectedNodeId,
         dirty: true,
         flowNodes: toFlowNodes(draft, selectedNodeId),
+        flowEdges: toFlowEdges(draft.pipeline),
+      };
+    }),
+  addNodeWithTemplate: (template) =>
+    set((state) => {
+      const draft = cloneGraph(state.draft);
+      const nextId = template?.id?.trim() || `node_${draft.pipeline.nodes.length + 1}`;
+      draft.pipeline.nodes.push(
+        normalizeNode({
+          id: nextId,
+          agent: template?.agent ?? "codex",
+          prompt: template?.prompt ?? "",
+          depends_on: template?.depends_on ?? [],
+          ...template,
+        }),
+      );
+      ensureLayout(draft);
+      return {
+        draft,
+        selectedNodeId: nextId,
+        dirty: true,
+        flowNodes: toFlowNodes(draft, nextId),
         flowEdges: toFlowEdges(draft.pipeline),
       };
     }),

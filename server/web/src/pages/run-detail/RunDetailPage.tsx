@@ -1,11 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, Position, type Edge, type Node, type NodeTypes } from "reactflow";
 import { useNavigate, useParams } from "react-router-dom";
+import { useToasts } from "../../app/providers";
+import { SegmentedControl } from "../../components/controls/SegmentedControl";
 import { AgentNode } from "../../components/graph/AgentNode";
+import { InlineNotice } from "../../components/feedback/InlineNotice";
 import { ErrorState, LoadingState } from "../../components/feedback/States";
+import { PageHeader } from "../../components/layout/PageHeader";
+import { PageSection } from "../../components/layout/PageSection";
+import { SplitPane } from "../../components/layout/SplitPane";
 import { StatusBadge } from "../../components/status/StatusBadge";
-import { getRunDetail, cancelRun, rerunNode, rerunRun, resumeRun } from "../../features/runs/api";
+import { StatusSummary } from "../../components/status/StatusSummary";
+import { cancelRun, getRunDetail, rerunNode, rerunRun, resumeRun } from "../../features/runs/api";
 import { useRunStream } from "../../features/run-viewer/sse";
 import { requestText } from "../../lib/http";
 import type { RunNode } from "../../types/api";
@@ -20,6 +27,7 @@ const PADDING_X = 80;
 const PADDING_Y = 80;
 
 type ViewMode = "stage" | "instance";
+type DiagnosticTab = "logs" | "events" | "artifacts" | "overview";
 
 interface RuntimeGraphNode {
   id: string;
@@ -210,57 +218,74 @@ function buildStageGraph(runNodes: RunNode[]): RuntimeGraphModel {
       if (sourceGroup === targetGroup) {
         return;
       }
-      const edgeId = `${sourceGroup}->${targetGroup}`;
-      edgeMap.set(edgeId, { id: edgeId, source: sourceGroup, target: targetGroup });
+      edgeMap.set(`${sourceGroup}->${targetGroup}`, {
+        id: `${sourceGroup}->${targetGroup}`,
+        source: sourceGroup,
+        target: targetGroup,
+      });
     });
   });
 
-  const nodes = groupOrder.map<RuntimeGraphNode>((groupId) => {
-    const members = groupMembers.get(groupId) ?? [];
-    const agentNames = Array.from(new Set(members.map((node) => node.agent)));
-    const totalAttempts = members.reduce((sum, node) => sum + Math.max(node.attempts.length, 1), 0);
-    const totalTicks = members.reduce((sum, node) => sum + node.tick_count, 0);
-    const metaParts: string[] = [];
-    if (totalAttempts > members.length) {
-      metaParts.push(`${totalAttempts} attempts`);
-    }
-    if (totalTicks > 0) {
-      metaParts.push(`${totalTicks} ticks`);
-    }
-    return {
-      id: groupId,
-      title: groupId,
-      agent: agentNames.length === 1 ? agentNames[0] : `${agentNames.length} agents`,
-      status: aggregateStatus(members.map((node) => node.status)),
-      depends_on: Array.from(
-        new Set(
-          members.flatMap((node) =>
-            node.depends_on
-              .map((dependency) => nodeToGroup.get(dependency) ?? dependency)
-              .filter((dependency) => dependency !== groupId),
+  return {
+    nodes: groupOrder.map((groupId) => {
+      const members = groupMembers.get(groupId) ?? [];
+      const totalAttempts = members.reduce((sum, node) => sum + Math.max(node.attempts.length, 1), 0);
+      const totalTicks = members.reduce((sum, node) => sum + node.tick_count, 0);
+      const metaParts: string[] = [];
+      if (totalAttempts > members.length) {
+        metaParts.push(`${totalAttempts} attempts`);
+      }
+      if (totalTicks > 0) {
+        metaParts.push(`${totalTicks} ticks`);
+      }
+      return {
+        id: groupId,
+        title: groupId,
+        agent: Array.from(new Set(members.map((node) => node.agent))).join(", "),
+        status: aggregateStatus(members.map((node) => node.status)),
+        depends_on: Array.from(
+          new Set(
+            members.flatMap((node) =>
+              node.depends_on
+                .map((dependency) => nodeToGroup.get(dependency) ?? dependency)
+                .filter((dependency) => dependency !== groupId),
+            ),
           ),
         ),
-      ),
-      memberNodeIds: members.map((node) => node.id),
-      subtitle: members.length > 1 ? `${members.length} instances` : "1 instance",
-      meta: metaParts.length ? metaParts.join(" · ") : undefined,
-    };
-  });
-
-  return {
-    nodes,
+        memberNodeIds: members.map((node) => node.id),
+        subtitle: members.length > 1 ? `${members.length} instances` : "1 instance",
+        meta: metaParts.length ? metaParts.join(" · ") : undefined,
+      };
+    }),
     edges: Array.from(edgeMap.values()),
   };
+}
+
+function chooseDefaultNodeId(nodes: RunNode[]) {
+  return nodes.find((node) => node.status === "failed")?.id ??
+    nodes.find((node) => node.status === "running")?.id ??
+    nodes[0]?.id ??
+    null;
+}
+
+function formatDate(value?: string | null) {
+  if (!value) {
+    return "n/a";
+  }
+  return new Date(value).toLocaleString();
 }
 
 export function RunDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { runId } = useParams();
+  const { pushToast } = useToasts();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("stage");
-  const [activeTab, setActiveTab] = useState<"overview" | "events" | "stdout" | "stderr" | "artifacts">("overview");
+  const [activeTab, setActiveTab] = useState<DiagnosticTab>("logs");
+  const [eventFilter, setEventFilter] = useState("all");
   useRunStream(runId);
+
   const runQuery = useQuery({
     queryKey: ["run-detail", runId],
     queryFn: () => getRunDetail(runId!),
@@ -281,24 +306,40 @@ export function RunDetailPage() {
       }
       return rerunRun(runId);
     },
-    onSuccess: async (payload) => {
+    onSuccess: async (payload, action) => {
       const nextRunId = payload.redirected_run_id ?? payload.run.id;
       await queryClient.invalidateQueries({ queryKey: ["runs"] });
       await queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
+      pushToast({
+        tone: "success",
+        title: `Run ${action} accepted`,
+        description: nextRunId === runId ? "The current run view was refreshed." : `Opened replacement run ${nextRunId}.`,
+      });
       if (nextRunId && nextRunId !== runId) {
         navigate(`/runs/${nextRunId}`);
       }
+    },
+    onError: (error: Error) => {
+      pushToast({ tone: "danger", title: "Run action failed", description: error.message });
     },
   });
 
   const rerunNodeMutation = useMutation({
     mutationFn: async (nodeId: string) => rerunNode(runId!, nodeId),
-    onSuccess: async (payload) => {
+    onSuccess: async (payload, nodeId) => {
       const nextRunId = payload.redirected_run_id ?? payload.run.id;
       await queryClient.invalidateQueries({ queryKey: ["runs"] });
+      pushToast({
+        tone: "success",
+        title: "Node rerun queued",
+        description: `${nodeId} moved into run ${nextRunId}.`,
+      });
       if (nextRunId) {
         navigate(`/runs/${nextRunId}`);
       }
+    },
+    onError: (error: Error) => {
+      pushToast({ tone: "danger", title: "Node rerun failed", description: error.message });
     },
   });
 
@@ -313,8 +354,15 @@ export function RunDetailPage() {
     };
   }, [runQuery.data]);
 
-  const activeGraph = runtimeGraphs?.[viewMode] ?? null;
+  useEffect(() => {
+    const nodes = runQuery.data?.graph.nodes;
+    if (!nodes?.length || selectedNodeId) {
+      return;
+    }
+    setSelectedNodeId(chooseDefaultNodeId(nodes));
+  }, [runQuery.data, selectedNodeId]);
 
+  const activeGraph = runtimeGraphs?.[viewMode] ?? null;
   const selectedGraphNode = useMemo(() => {
     if (!activeGraph) {
       return null;
@@ -332,17 +380,13 @@ export function RunDetailPage() {
   }, [runQuery.data, selectedGraphNode]);
 
   const selectedSingleNode = selectedRunNodes.length === 1 ? selectedRunNodes[0] : null;
-
+  const preferredLogArtifact = selectedSingleNode?.artifacts.find(
+    (artifact) => artifact.name === "stderr.log" || artifact.name === "stdout.log",
+  );
   const logQuery = useQuery({
-    queryKey: ["run-log", runId, selectedSingleNode?.id, activeTab],
-    queryFn: () =>
-      requestText(
-        `/api/runs/${runId}/nodes/${selectedSingleNode?.id}/artifacts/${activeTab === "stdout" ? "stdout.log" : "stderr.log"}`,
-      ),
-    enabled:
-      Boolean(runId && selectedSingleNode?.id) &&
-      (activeTab === "stdout" || activeTab === "stderr") &&
-      Boolean(selectedSingleNode?.artifacts.some((artifact) => artifact.name === `${activeTab}.log`)),
+    queryKey: ["run-log", runId, selectedSingleNode?.id, preferredLogArtifact?.name],
+    queryFn: () => requestText(`/api/runs/${runId}/nodes/${selectedSingleNode?.id}/artifacts/${preferredLogArtifact?.name}`),
+    enabled: Boolean(runId && selectedSingleNode?.id && preferredLogArtifact?.name),
   });
 
   if (runQuery.isLoading) {
@@ -356,214 +400,288 @@ export function RunDetailPage() {
   }
 
   const detail = runQuery.data;
-  const nodes = buildRunLayout(activeGraph.nodes).map((node) => ({
+  const activeNodes = buildRunLayout(activeGraph.nodes).map((node) => ({
     ...node,
     selected: node.id === selectedGraphNode?.id,
   }));
   const edges = activeGraph.edges.map<Edge>((edge) => ({
     ...edge,
     type: "smoothstep",
-    markerEnd: {
-      type: MarkerType.ArrowClosed,
-      width: 22,
-      height: 22,
-    },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
   }));
 
+  const failedCount = detail.graph.nodes.filter((node) => node.status === "failed").length;
+  const runningCount = detail.graph.nodes.filter((node) => node.status === "running").length;
+  const completedCount = detail.graph.nodes.filter((node) => node.status === "completed").length;
+  const retries = detail.graph.nodes.reduce((sum, node) => sum + Math.max(node.attempts.length - 1, 0), 0);
+  const fanoutGroups = new Set(detail.graph.nodes.map((node) => node.fanout_group).filter(Boolean)).size;
+  const availableEventTypes = Array.from(new Set(detail.events.map((event) => event.type)));
+  const filteredEvents = detail.events.filter((event) => {
+    if (eventFilter !== "all" && event.type !== eventFilter) {
+      return false;
+    }
+    if (!selectedGraphNode) {
+      return true;
+    }
+    if (!event.node_id) {
+      return true;
+    }
+    return selectedGraphNode.memberNodeIds.includes(event.node_id);
+  });
+  const canCancel = detail.run.status === "running";
+  const canResume = detail.run.status === "failed" || detail.run.status === "cancelled";
+
   return (
-    <div className="layout">
-      <section className="panel stack">
-        <div className="section-head">
-          <div>
-            <h2>{detail.run.pipeline.name}</h2>
-            <div className="muted">{detail.run.id}</div>
-          </div>
-          <div className="row-wrap">
-            <StatusBadge status={detail.run.status} />
-            <button className="button danger" onClick={() => actionMutation.mutate("cancel")} type="button">
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Operations"
+        title={detail.run.pipeline.name}
+        description="Failure-first runtime inspection with stage and instance drill-down, diagnostic output, and context-aware run actions."
+        meta={<StatusBadge status={detail.run.status} />}
+        actions={
+          <>
+            <button className="button danger" disabled={!canCancel} onClick={() => actionMutation.mutate("cancel")} type="button">
               Cancel
             </button>
-            <button className="button" onClick={() => actionMutation.mutate("resume")} type="button">
+            <button className="button" disabled={!canResume} onClick={() => actionMutation.mutate("resume")} type="button">
               Resume
             </button>
-            <button className="button" onClick={() => actionMutation.mutate("rerun")} type="button">
+            <button className="button primary" onClick={() => actionMutation.mutate("rerun")} type="button">
               Rerun
             </button>
-          </div>
-        </div>
-        <div className="tabs">
-          <button className={`tab${viewMode === "stage" ? " active" : ""}`} onClick={() => setViewMode("stage")} type="button">
-            Stage View
-          </button>
-          <button className={`tab${viewMode === "instance" ? " active" : ""}`} onClick={() => setViewMode("instance")} type="button">
-            Instance View
-          </button>
-        </div>
-        <div className="flow-panel">
-          <ReactFlow
-            fitView
-            edges={edges}
-            nodes={nodes}
-            nodeTypes={nodeTypes}
-            nodesConnectable={false}
-            nodesDraggable={false}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background gap={24} />
-            <Controls showInteractive={false} />
-          </ReactFlow>
-        </div>
-      </section>
-      <section className="panel stack">
-        <div className="tabs">
-          {(["overview", "events", "stdout", "stderr", "artifacts"] as const).map((tab) => (
-            <button
-              className={`tab${activeTab === tab ? " active" : ""}`}
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              type="button"
-            >
-              {tab === "events" ? "Trace" : tab[0].toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
-        </div>
-        {activeTab === "overview" ? (
-          <div className="list">
-            {activeGraph.nodes.map((node) => {
-              const memberCount = node.memberNodeIds.length;
-              return (
-                <div className="list-item" key={node.id}>
-                  <div className="section-head compact">
-                    <button className="button" onClick={() => setSelectedNodeId(node.id)} type="button">
-                      {node.title}
-                    </button>
-                    <StatusBadge status={node.status} />
-                  </div>
-                  <div className="muted">
-                    {node.agent}
-                    {memberCount > 1 ? ` · ${memberCount} instances` : ""}
-                    {node.meta ? ` · ${node.meta}` : ""}
-                  </div>
-                  <div className="row-wrap">
-                    {memberCount === 1 ? (
-                      <button className="button" onClick={() => rerunNodeMutation.mutate(node.memberNodeIds[0])} type="button">
-                        Rerun Node
-                      </button>
-                    ) : (
-                      <div className="muted">Switch to instance view to rerun a specific shard.</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
-        {activeTab === "events" ? (
-          <div className="event-list">
-            {detail.events.slice(-100).map((event, index) => (
-              <div className="event-row" key={`${event.type}-${index}`}>
-                <strong>{event.type}</strong>
-                <div className="muted">
-                  {event.timestamp}
-                  {event.node_id ? ` · ${event.node_id}` : ""}
-                </div>
-                <pre>{JSON.stringify(event.data ?? {}, null, 2)}</pre>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {activeTab === "stdout" || activeTab === "stderr" ? (
-          selectedSingleNode ? (
-            <pre>{logQuery.data ?? "No data."}</pre>
-          ) : (
-            <div className="muted">Select a single runtime instance in Instance View to inspect {activeTab}.</div>
-          )
-        ) : null}
-        {activeTab === "artifacts" ? (
-          selectedRunNodes.length ? (
-            selectedSingleNode ? (
-              <div className="artifact-list">
-                {selectedSingleNode.artifacts.length ? (
-                  selectedSingleNode.artifacts.map((artifact) => (
-                    <div className="artifact-row" key={artifact.name}>
-                      <a
-                        href={`/api/runs/${runId}/nodes/${selectedSingleNode.id}/artifacts/${artifact.name}`}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        {artifact.name}
-                      </a>
-                      <span className="muted">{artifact.size} bytes</span>
+          </>
+        }
+      />
+
+      <div className="metrics-grid">
+        <StatusSummary hint={detail.run.id} label="Run id" value={detail.run.id} />
+        <StatusSummary hint={`${detail.graph.nodes.length} total nodes`} label="Completed" status="completed" value={completedCount} />
+        <StatusSummary hint="Selected by default on failure" label="Failed" status="failed" value={failedCount} />
+        <StatusSummary hint={`${fanoutGroups} fanout groups · ${retries} retries`} label="Running" status="running" value={runningCount} />
+      </div>
+
+      <SplitPane
+        aside={
+          <div className="inspector-sections">
+            <PageSection title="Node inspector" description="Selection state, attempts, and scoped actions.">
+              {selectedGraphNode ? (
+                <div className="inspector-card active">
+                  <div className="list-row-head">
+                    <div>
+                      <div className="inspector-title">{selectedGraphNode.title}</div>
+                      <div className="muted">{selectedGraphNode.agent}</div>
                     </div>
-                  ))
+                    <StatusBadge status={selectedGraphNode.status} />
+                  </div>
+                  <div className="run-card-meta">
+                    <span>{selectedGraphNode.memberNodeIds.length} runtime instance(s)</span>
+                    {selectedGraphNode.subtitle ? <span>{selectedGraphNode.subtitle}</span> : null}
+                    {selectedGraphNode.meta ? <span>{selectedGraphNode.meta}</span> : null}
+                  </div>
+                  {selectedSingleNode ? (
+                    <button className="button" onClick={() => rerunNodeMutation.mutate(selectedSingleNode.id)} type="button">
+                      Rerun node
+                    </button>
+                  ) : (
+                    <InlineNotice tone="warning">Switch to instance view to rerun a specific fanout member.</InlineNotice>
+                  )}
+                </div>
+              ) : (
+                <EmptySelection />
+              )}
+            </PageSection>
+
+            <PageSection title="Selected instances" description="Attempts, timing, and artifact readiness for the current selection.">
+              {selectedRunNodes.length ? (
+                <div className="list">
+                  {selectedRunNodes.map((node) => (
+                    <div className="list-item" key={node.id}>
+                      <div className="list-row-head">
+                        <div>
+                          <div className="list-title">{node.id}</div>
+                          <div className="muted">{node.agent}</div>
+                        </div>
+                        <StatusBadge status={node.status} />
+                      </div>
+                      <div className="run-card-meta">
+                        <span>Started {formatDate(node.started_at)}</span>
+                        <span>Finished {formatDate(node.finished_at)}</span>
+                      </div>
+                      {node.attempts.length ? (
+                        <pre className="code-block">
+                          {node.attempts
+                            .map((attempt) => {
+                              const parts = [`attempt ${attempt.number}`, attempt.status];
+                              if (attempt.exit_code !== null && attempt.exit_code !== undefined) {
+                                parts.push(`exit ${attempt.exit_code}`);
+                              }
+                              return parts.join(" · ");
+                            })
+                            .join("\n")}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptySelection />
+              )}
+            </PageSection>
+          </div>
+        }
+      >
+        <div className="detail-stack">
+          <PageSection
+            title="Runtime map"
+            description="Stage summary for fanout understanding, with instance drill-down when you need the exact shard."
+            actions={
+              <SegmentedControl
+                options={[
+                  { label: "Stage view", value: "stage" },
+                  { label: "Instance view", value: "instance" },
+                ]}
+                value={viewMode}
+                onChange={setViewMode}
+              />
+            }
+          >
+            <div className="flow-panel">
+              <ReactFlow
+                fitView
+                edges={edges}
+                nodes={activeNodes}
+                nodeTypes={nodeTypes}
+                nodesConnectable={false}
+                nodesDraggable={false}
+                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background gap={24} />
+                <Controls showInteractive={false} />
+              </ReactFlow>
+            </div>
+          </PageSection>
+
+          <PageSection
+            title="Diagnostics"
+            description="Logs first, then event stream and artifacts for the selected node scope."
+            actions={
+              <SegmentedControl
+                options={[
+                  { label: "Logs", value: "logs" },
+                  { label: "Events", value: "events" },
+                  { label: "Artifacts", value: "artifacts" },
+                  { label: "Overview", value: "overview" },
+                ]}
+                value={activeTab}
+                onChange={setActiveTab}
+              />
+            }
+          >
+            {activeTab === "logs" ? (
+              selectedSingleNode ? (
+                preferredLogArtifact ? (
+                  <pre className="log-viewer">{logQuery.data ?? "Loading log..."}</pre>
                 ) : (
-                  <div className="muted">No artifacts.</div>
-                )}
+                  <InlineNotice tone="warning">The selected node has no stdout/stderr artifact yet.</InlineNotice>
+                )
+              ) : (
+                <InlineNotice tone="warning">Select a single runtime instance to inspect stdout or stderr directly.</InlineNotice>
+              )
+            ) : null}
+
+            {activeTab === "events" ? (
+              <div className="diagnostic-stack">
+                <label className="field">
+                  <span className="field-label">Event filter</span>
+                  <select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)}>
+                    <option value="all">All events</option>
+                    {availableEventTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="event-list">
+                  {filteredEvents.length ? (
+                    filteredEvents.slice(-80).map((event, index) => (
+                      <div className="event-row" key={`${event.type}-${index}`}>
+                        <div className="list-row-head">
+                          <strong>{event.type}</strong>
+                          <span className="muted">{formatDate(event.timestamp)}</span>
+                        </div>
+                        <div className="run-card-meta">
+                          <span>{event.node_id ?? "run-wide event"}</span>
+                        </div>
+                        <pre>{JSON.stringify(event.data ?? {}, null, 2)}</pre>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="event-row">No events match this selection.</div>
+                  )}
+                </div>
               </div>
-            ) : (
-              <div className="artifact-list">
-                {selectedRunNodes.map((node) => (
-                  <div className="list-item" key={node.id}>
-                    <div className="section-head compact">
-                      <strong>{node.id}</strong>
+            ) : null}
+
+            {activeTab === "artifacts" ? (
+              selectedRunNodes.length ? (
+                <div className="artifact-list">
+                  {selectedRunNodes.flatMap((node) =>
+                    node.artifacts.map((artifact) => (
+                      <div className="artifact-row" key={`${node.id}-${artifact.name}`}>
+                        <div>
+                          <strong>{artifact.name}</strong>
+                          <div className="muted">{node.id}</div>
+                        </div>
+                        <a
+                          className="button"
+                          href={`/api/runs/${runId}/nodes/${node.id}/artifacts/${artifact.name}`}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open
+                        </a>
+                      </div>
+                    )),
+                  )}
+                </div>
+              ) : (
+                <EmptySelection />
+              )
+            ) : null}
+
+            {activeTab === "overview" ? (
+              <div className="list">
+                {activeGraph.nodes.map((node) => (
+                  <button
+                    className={`list-item${node.id === selectedGraphNode?.id ? " active" : ""}`}
+                    key={node.id}
+                    onClick={() => setSelectedNodeId(node.id)}
+                    type="button"
+                  >
+                    <div className="list-row-head">
+                      <div>
+                        <div className="list-title">{node.title}</div>
+                        <div className="muted">{node.agent}</div>
+                      </div>
                       <StatusBadge status={node.status} />
                     </div>
-                    {node.artifacts.length ? (
-                      node.artifacts.map((artifact) => (
-                        <div className="artifact-row" key={`${node.id}-${artifact.name}`}>
-                          <a href={`/api/runs/${runId}/nodes/${node.id}/artifacts/${artifact.name}`} rel="noreferrer" target="_blank">
-                            {artifact.name}
-                          </a>
-                          <span className="muted">{artifact.size} bytes</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="muted">No artifacts.</div>
-                    )}
-                  </div>
+                    <div className="run-card-meta">
+                      <span>{node.memberNodeIds.length} instance(s)</span>
+                      {node.meta ? <span>{node.meta}</span> : null}
+                    </div>
+                  </button>
                 ))}
               </div>
-            )
-          ) : (
-            <div className="muted">No artifacts.</div>
-          )
-        ) : null}
-        {selectedGraphNode ? (
-          <div className="list-item">
-            <div className="section-head compact">
-              <strong>{selectedGraphNode.title}</strong>
-              <StatusBadge status={selectedGraphNode.status} />
-            </div>
-            <div className="muted">
-              {selectedGraphNode.agent}
-              {selectedGraphNode.memberNodeIds.length > 1 ? ` · ${selectedGraphNode.memberNodeIds.length} runtime instances` : ""}
-            </div>
-            {selectedRunNodes.map((node) => (
-              <div key={node.id}>
-                <div className="muted">
-                  {node.id}
-                  {node.attempts.length > 1 ? ` · ${node.attempts.length} attempts` : ""}
-                  {node.tick_count > 0 ? ` · ${node.tick_count} ticks` : ""}
-                </div>
-                {node.attempts.length ? (
-                  <pre>
-                    {node.attempts
-                      .map((attempt) => {
-                        const parts = [`attempt ${attempt.number}`, attempt.status];
-                        if (attempt.exit_code !== null && attempt.exit_code !== undefined) {
-                          parts.push(`exit ${attempt.exit_code}`);
-                        }
-                        return parts.join(" · ");
-                      })
-                      .join("\n")}
-                  </pre>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
+            ) : null}
+          </PageSection>
+        </div>
+      </SplitPane>
     </div>
   );
+}
+
+function EmptySelection() {
+  return <InlineNotice tone="info">Select a node from the runtime map to inspect logs, attempts, and artifacts.</InlineNotice>;
 }

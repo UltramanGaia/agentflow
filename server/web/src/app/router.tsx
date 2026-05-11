@@ -12,6 +12,7 @@ const router = createBrowserRouter([
       { index: true, element: <Navigate to="/runs" replace /> },
       { path: "runs", element: <RunsPage /> },
       { path: "runs/:runId", element: <RunDetailPage /> },
+      { path: "graphs", element: <RunsPage /> },
       { path: "graphs/:graphId/edit", element: <GraphEditorPage /> },
       { path: "*", element: <Navigate to="/runs" replace /> },
     ],
