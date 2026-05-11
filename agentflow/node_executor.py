@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Mapping
 from typing import Any, Awaitable, Callable
 
-from agentflow.agents.registry import AdapterRegistry
+from agentflow.agents.base import AgentAdapter
 from agentflow.context import render_node_prompt
 from agentflow.periodic import PeriodicActionEnvelope, parse_periodic_actions
 from agentflow.prepared import ExecutionPaths, build_execution_paths
@@ -35,7 +36,7 @@ class NodeExecutionOutcome:
 @dataclass(slots=True)
 class NodeExecutor:
     store: RunStore
-    adapters: AdapterRegistry
+    adapters: Mapping[Any, AgentAdapter]
     runner: Runner
     worktrees: WorktreeManager
     scratchboards: ScratchboardManager
@@ -142,7 +143,7 @@ class NodeExecutor:
         paths = self._build_paths(run_id, node_id, execution_node.target, pipeline.working_path)
 
         prompt += self.scratchboards.prompt_suffix_for_run(run_id)
-        adapter = self.adapters.get(runtime_agent)
+        adapter = self.adapters[runtime_agent]
         parser = create_trace_parser(runtime_agent, node.id)
         periodic_actions: PeriodicActionEnvelope | None = None
         periodic_action_parse_error: str | None = None

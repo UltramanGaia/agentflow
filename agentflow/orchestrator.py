@@ -14,8 +14,10 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from typing import Mapping
 
-from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
+from agentflow.agents import build_default_adapters
+from agentflow.agents.base import AgentAdapter
 from agentflow.graph_optimization_session import GraphOptimizationSession
 from agentflow.node_executor import NodeExecutionOutcome, NodeExecutor
 from agentflow.periodic_scheduler import PeriodicScheduler
@@ -66,7 +68,7 @@ class Orchestrator:
     """
 
     store: RunStore
-    adapters: AdapterRegistry = default_adapter_registry
+    adapters: Mapping[Any, AgentAdapter] = field(default_factory=build_default_adapters)
     runner: Runner = field(default_factory=LocalRunner)
     worktrees: WorktreeManager = field(default_factory=WorktreeManager)
     scratchboards: ScratchboardManager = field(default_factory=ScratchboardManager)

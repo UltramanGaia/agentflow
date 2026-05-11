@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Protocol
 from typing import Any
 
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs_models import NodeSpec
 
 
-class AgentAdapter(ABC):
-    @abstractmethod
+class AgentAdapter(Protocol):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
-        raise NotImplementedError
+        ...
 
     def merge_env(self, *parts: dict[str, str]) -> dict[str, str]:
         merged: dict[str, str] = {}

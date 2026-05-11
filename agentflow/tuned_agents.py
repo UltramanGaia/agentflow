@@ -12,7 +12,7 @@ from uuid import uuid4
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agentflow.agents.registry import default_adapter_registry
+from agentflow.agents import get_default_adapter
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs import (
     AgentKind,
@@ -388,7 +388,7 @@ def _run_optimizer(
             "target": {"cwd": str(repo_dir)},
         }
     )
-    adapter = default_adapter_registry.get(optimizer)
+    adapter = get_default_adapter(optimizer)
     paths = _execution_paths(repo_dir, runtime_dir)
     prepared = adapter.prepare(node, prompt, paths)
     _materialize_runtime_files(prepared, runtime_dir)

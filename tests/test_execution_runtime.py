@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from agentflow.agents.base import AgentAdapter
-from agentflow.agents.registry import AdapterRegistry
 from agentflow.node_executor import NodeExecutor
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.run_state import RunStateRegistry
@@ -135,8 +135,9 @@ def test_node_executor_persists_running_state_before_runner_executes(tmp_path: P
     store = RunStore(tmp_path / "runs")
     asyncio.run(store.create_run(record))
 
-    registry = AdapterRegistry()
-    registry.register(AgentKind.SHELL, StubAdapter())
+    adapters = {
+        AgentKind.SHELL: cast(AgentAdapter, StubAdapter()),
+    }
     run_state = RunStateRegistry()
     run_state.ensure_run(run_id)
     runner = InspectingRunner(store.base_dir, run_id)
@@ -146,7 +147,7 @@ def test_node_executor_persists_running_state_before_runner_executes(tmp_path: P
 
     executor = NodeExecutor(
         store=store,
-        adapters=registry,
+        adapters=adapters,
         runner=runner,
         worktrees=WorktreeManager(),
         scratchboards=ScratchboardManager(),
