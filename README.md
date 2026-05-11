@@ -208,6 +208,8 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `multi_agent_debate.py` | Codex vs Claude: independent solve + cross-critique |
 | `release_check.py` | Parallel release gate: tests + security + changelog |
 | `iterative_impl.py` | Write → review → fix cycle until LGTM |
+| `pi_local_lmstudio.py` | Local LLMs for scanning, external agents for synthesis |
+| `graph_optimization_rounds.py` | Multiple optimization rounds over your graph |
 | `airflow_like_fuzz_batched.py` | 128-shard fanout with batch merge + periodic monitor |
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
 | `repo_sweep_batched.py` | Static large-scale repo sweep with batched reducers |

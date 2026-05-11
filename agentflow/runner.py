@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import traceback
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,6 +169,7 @@ class LocalRunner:
         wait_task = asyncio.create_task(process.wait())
         timed_out = False
         cancelled = False
+        execution_error: Exception | None = None
 
         timeout = node.timeout_seconds if node.timeout_seconds and node.timeout_seconds > 0 else None
         deadline = asyncio.get_running_loop().time() + timeout if timeout else None
@@ -194,10 +196,10 @@ class LocalRunner:
                         try:
                             await asyncio.wait_for(wait_task, timeout=5)
                         except asyncio.TimeoutError:
-                            timed_out = True
+                            execution_error = RuntimeError("process did not exit after stdout/stderr closed")
                     break
-        except Exception:
-            timed_out = True
+        except Exception as exc:
+            execution_error = exc
 
         async def _drain_streams() -> None:
             try:
@@ -217,6 +219,14 @@ class LocalRunner:
             await _drain_streams()
             stderr_lines.append(f"Timed out after {node.timeout_seconds}s")
             await on_output("stderr", stderr_lines[-1])
+        elif execution_error is not None:
+            await self._terminate_with_fallback(process, wait_task)
+            await _drain_streams()
+            error_message = "".join(
+                traceback.format_exception_only(type(execution_error), execution_error)
+            ).strip()
+            stderr_lines.append(f"Execution failed: {error_message}")
+            await on_output("stderr", stderr_lines[-1])
         elif cancelled:
             await self._terminate_with_fallback(process, wait_task)
             await _drain_streams()
@@ -231,6 +241,8 @@ class LocalRunner:
             exit_code = 124
         elif cancelled:
             exit_code = 130
+        elif execution_error is not None:
+            exit_code = process.returncode if process.returncode is not None else 1
         else:
             exit_code = process.returncode if process.returncode is not None else 0
         return RawExecutionResult(

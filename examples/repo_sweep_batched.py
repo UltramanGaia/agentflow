@@ -16,7 +16,7 @@ with Graph(
     },
     agent_defaults={
         "codex": {
-            "model": "gpt-5-codex",
+            "model": "gpt-5.4",
             "retries": 1,
             "retry_backoff_seconds": 1,
             "extra_args": ["--search", "-c", 'model_reasoning_effort="high"'],

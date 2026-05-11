@@ -39,7 +39,7 @@ class NodeSpec(BaseModel):
     capture: CaptureMode = CaptureMode.FINAL
     repo_instructions_mode: RepoInstructionsMode = RepoInstructionsMode.INHERIT
     output_key: str | None = None
-    timeout_seconds: int | None = Field(default=1800, gt=0)
+    timeout_seconds: int | None = Field(default=None, gt=0)
     executable: str | None = None
     extra_args: list[str] = Field(default_factory=list)
     description: str | None = None

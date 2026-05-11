@@ -1,35 +1,32 @@
-"""Smallest Python-authored Codex/Claude DAG reference."""
+"""Smallest Python-authored Pi DAG reference."""
 
-from agentflow import Graph, claude, codex
+from agentflow import Graph, pi
 
 
 with Graph("airflow-like-example", working_dir=".", concurrency=3) as dag:
-    plan = codex(
+    plan = pi(
         task_id="plan",
         prompt="Inspect the repo and produce a concise plan.",
-        model="gpt-5-codex",
         tools="read_only",
     )
-    implement = claude(
+    implement = pi(
         task_id="implement",
         prompt="Implement the approved plan:\n\n{{ nodes.plan.output }}",
-        model="claude-sonnet-4-5",
         tools="read_write",
     )
-    review = codex(
+    review = pi(
         task_id="review",
         prompt="Review the plan and call out risks:\n\n{{ nodes.plan.output }}",
         capture="trace",
         tools="read_only",
     )
-    merge = codex(
+    merge = pi(
         task_id="merge",
         prompt=(
             "Merge the implementation and review into one final response.\n\n"
             "Implementation:\n{{ nodes.implement.output }}\n\n"
             "Review:\n{{ nodes.review.output }}"
         ),
-        model="gpt-5-codex",
     )
 
     plan >> [implement, review]

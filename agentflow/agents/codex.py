@@ -2,16 +2,12 @@ from __future__ import annotations
 
 from agentflow.agents.base import AgentAdapter
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.specs import NodeSpec, RepoInstructionsMode, ToolAccess
+from agentflow.specs import NodeSpec, RepoInstructionsMode
 
 
 class CodexAdapter(AgentAdapter):
-    def _resolve_sandbox_mode(self, node: NodeSpec) -> str:
-        return "read-only" if node.tools == ToolAccess.READ_ONLY else "workspace-write"
-
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         executable = node.executable or "codex"
-        sandbox = self._resolve_sandbox_mode(node)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
         command = [
             executable,
@@ -22,8 +18,7 @@ class CodexAdapter(AgentAdapter):
             'approval_policy="never"',
             "-c",
             "suppress_unstable_features_warning=true",
-            "--sandbox",
-            sandbox,
+            "--dangerously-bypass-approvals-and-sandbox",
         ]
         if node.model:
             command.extend(["--model", node.model])

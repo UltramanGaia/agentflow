@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import ReactFlow, { Background, Controls, type NodeTypes } from "reactflow";
+import ReactFlow, { Background, Controls, MarkerType, Position, type Edge, type Node, type NodeTypes } from "reactflow";
 import { useNavigate, useParams } from "react-router-dom";
 import { AgentNode } from "../../components/graph/AgentNode";
 import { ErrorState, LoadingState } from "../../components/feedback/States";
@@ -8,8 +8,110 @@ import { StatusBadge } from "../../components/status/StatusBadge";
 import { getRunDetail, cancelRun, rerunNode, rerunRun, resumeRun } from "../../features/runs/api";
 import { useRunStream } from "../../features/run-viewer/sse";
 import { requestText } from "../../lib/http";
+import type { RunNode } from "../../types/api";
 
 const nodeTypes: NodeTypes = { agentNode: AgentNode };
+
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 132;
+const COLUMN_GAP = 120;
+const ROW_GAP = 44;
+const PADDING_X = 80;
+const PADDING_Y = 80;
+
+function buildRunLayout(runNodes: RunNode[]): Node[] {
+  const nodeById = new Map(runNodes.map((node) => [node.id, node]));
+  const layerById = new Map<string, number>();
+  const indegree = new Map<string, number>();
+  const downstream = new Map<string, string[]>();
+  const order = new Map(runNodes.map((node, index) => [node.id, index]));
+
+  runNodes.forEach((node) => {
+    indegree.set(node.id, 0);
+    downstream.set(node.id, []);
+  });
+
+  runNodes.forEach((node) => {
+    node.depends_on.forEach((dependency) => {
+      if (!nodeById.has(dependency)) {
+        return;
+      }
+      indegree.set(node.id, (indegree.get(node.id) ?? 0) + 1);
+      downstream.get(dependency)?.push(node.id);
+    });
+  });
+
+  const queue = runNodes
+    .filter((node) => (indegree.get(node.id) ?? 0) === 0)
+    .sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+    .map((node) => node.id);
+  const topoOrder: string[] = [];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    topoOrder.push(currentId);
+    const currentLayer = layerById.get(currentId) ?? 0;
+    for (const nextId of downstream.get(currentId) ?? []) {
+      layerById.set(nextId, Math.max(layerById.get(nextId) ?? 0, currentLayer + 1));
+      indegree.set(nextId, (indegree.get(nextId) ?? 1) - 1);
+      if ((indegree.get(nextId) ?? 0) === 0) {
+        queue.push(nextId);
+        queue.sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+      }
+    }
+  }
+
+  const remainingIds = runNodes
+    .map((node) => node.id)
+    .filter((nodeId) => !topoOrder.includes(nodeId))
+    .sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+  topoOrder.push(...remainingIds);
+
+  remainingIds.forEach((nodeId) => {
+    const node = nodeById.get(nodeId);
+    if (!node) {
+      return;
+    }
+    const inferredLayer = node.depends_on.reduce((maxLayer, dependency) => {
+      return Math.max(maxLayer, (layerById.get(dependency) ?? -1) + 1);
+    }, 0);
+    layerById.set(nodeId, Math.max(layerById.get(nodeId) ?? 0, inferredLayer));
+  });
+
+  const columns = new Map<number, string[]>();
+  topoOrder.forEach((nodeId) => {
+    const layer = layerById.get(nodeId) ?? 0;
+    const nodesInColumn = columns.get(layer) ?? [];
+    nodesInColumn.push(nodeId);
+    columns.set(layer, nodesInColumn);
+  });
+
+  const maxColumnSize = Math.max(...Array.from(columns.values(), (column) => column.length), 1);
+
+  return runNodes.map<Node>((node) => {
+    const layer = layerById.get(node.id) ?? 0;
+    const row = columns.get(layer)?.indexOf(node.id) ?? 0;
+    const columnSize = columns.get(layer)?.length ?? 1;
+    const verticalOffset = ((maxColumnSize - columnSize) * (NODE_HEIGHT + ROW_GAP)) / 2;
+
+    return {
+      id: node.id,
+      type: "agentNode",
+      position: {
+        x: PADDING_X + layer * (NODE_WIDTH + COLUMN_GAP),
+        y: PADDING_Y + verticalOffset + row * (NODE_HEIGHT + ROW_GAP),
+      },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      data: {
+        title: node.id,
+        agent: node.agent,
+        status: node.status,
+      },
+      selected: false,
+    };
+  });
+}
 
 export function RunDetailPage() {
   const navigate = useNavigate();
@@ -90,14 +192,19 @@ export function RunDetailPage() {
   }
 
   const detail = runQuery.data;
-  const nodes = detail.graph.nodes.map((node, index) => ({
-    id: node.id,
-    type: "agentNode",
-    position: { x: 80 + (index % 3) * 260, y: 80 + Math.floor(index / 3) * 180 },
-    data: { title: node.id, agent: node.agent, status: node.status },
+  const nodes = buildRunLayout(detail.graph.nodes).map((node) => ({
+    ...node,
     selected: node.id === selectedNode?.id,
   }));
-  const edges = detail.graph.edges.map((edge) => ({ ...edge, type: "smoothstep" as const }));
+  const edges = detail.graph.edges.map<Edge>((edge) => ({
+    ...edge,
+    type: "smoothstep",
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      width: 22,
+      height: 22,
+    },
+  }));
 
   return (
     <div className="layout">

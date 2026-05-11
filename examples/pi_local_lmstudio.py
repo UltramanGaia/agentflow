@@ -41,7 +41,7 @@ with Graph("pi-lmstudio-scan", working_dir=".", concurrency=4) as dag:
                 "Consolidate these scan results into a single punch list, grouped by urgency.\n\n"
                 "{% for r in fanouts.scan.nodes %}{{ r.output }}\n---\n{% endfor %}"
             ),
-            model="gpt-5-codex",
+            model="gpt-5.4",
         ),
         scans,
         size=4,
